@@ -1,0 +1,99 @@
+import os
+import requests
+import pytest
+import json
+
+
+@pytest.mark.timeout(30)
+def test_hud_opportunity_zones_comprehensive_data():
+    """Test fetching comprehensive HUD Opportunity Zones data for market analysis"""
+    # Use Las Vegas coordinates (known OZ area)
+    lat = float(os.getenv("TEST_LAT", "36.1699"))
+    lng = float(os.getenv("TEST_LNG", "-115.1398"))
+    
+    # Test 1: Basic OZ status and geometry
+    url = (
+        "https://services.arcgis.com/AgwDJMQH12AGieWa/ArcGIS/rest/services/"
+        "Opportunity_Zone_Index_FS/FeatureServer/0/query"
+        "?f=json"
+        "&geometryType=esriGeometryPoint"
+        f"&geometry={{'x':{lng},'y':{lat}}}"
+        "&inSR=4326"
+        "&spatialRel=esriSpatialRelIntersects"
+        "&returnGeometry=false"
+        "&outFields=GEOID,NAME,STATE,TRACTCE10,Pop2018,Pop2023,MedHHInc2018,MedHHInc2023,MedHomeVal2018,MedHomeVal2023,UnempRate2018,TotalRetailSales,TotalBusinesses"
+    )
+    
+    r = requests.get(url, timeout=20)
+    assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:200]}"
+    data = r.json()
+    
+    # Check response structure
+    assert "features" in data and isinstance(data["features"], list)
+    
+    if data["features"]:
+        feature = data["features"][0]
+        attributes = feature.get("attributes", {})
+        
+        # Verify we got the economic data we need
+        print(f"OZ Data Retrieved:")
+        print(f"  GEOID: {attributes.get('GEOID')}")
+        print(f"  Name: {attributes.get('NAME')}")
+        print(f"  State: {attributes.get('STATE')}")
+        print(f"  Population 2018: {attributes.get('Pop2018')}")
+        print(f"  Population 2023: {attributes.get('Pop2023')}")
+        print(f"  Median HH Income 2018: ${attributes.get('MedHHInc2018'):,}" if attributes.get('MedHHInc2018') else "  Median HH Income 2018: N/A")
+        print(f"  Median HH Income 2023: ${attributes.get('MedHHInc2023'):,}" if attributes.get('MedHHInc2023') else "  Median HH Income 2023: N/A")
+        print(f"  Median Home Value 2018: ${attributes.get('MedHomeVal2018'):,}" if attributes.get('MedHomeVal2018') else "  Median Home Value 2018: N/A")
+        print(f"  Median Home Value 2023: ${attributes.get('MedHomeVal2023'):,}" if attributes.get('MedHomeVal2023') else "  Median Home Value 2023: N/A")
+        print(f"  Unemployment Rate 2018: {attributes.get('UnempRate2018')}%" if attributes.get('UnempRate2018') else "  Unemployment Rate 2018: N/A")
+        print(f"  Total Retail Sales: ${attributes.get('TotalRetailSales'):,}" if attributes.get('TotalRetailSales') else "  Total Retail Sales: N/A")
+        print(f"  Total Businesses: {attributes.get('TotalBusinesses')}" if attributes.get('TotalBusinesses') else "  Total Businesses: N/A")
+        
+        # Verify we have the key data fields for market analysis
+        assert attributes.get('GEOID') is not None, "Missing GEOID for OZ identification"
+        assert attributes.get('NAME') is not None, "Missing OZ name"
+        
+        return data
+    else:
+        print("No Opportunity Zone found at this location")
+        return data
+
+
+@pytest.mark.timeout(30) 
+def test_hud_opportunity_zones_housing_data():
+    """Test fetching housing-specific data for supply/demand analysis"""
+    # Use Dallas coordinates (known OZ area with housing data)
+    lat = float(os.getenv("TEST_LAT_HOUSING", "32.7767"))
+    lng = float(os.getenv("TEST_LNG_HOUSING", "-96.7970"))
+    
+    url = (
+        "https://services.arcgis.com/AgwDJMQH12AGieWa/ArcGIS/rest/services/"
+        "Opportunity_Zone_Index_FS/FeatureServer/0/query"
+        "?f=json"
+        "&geometryType=esriGeometryPoint"
+        f"&geometry={{'x':{lng},'y':{lat}}}"
+        "&inSR=4326"
+        "&spatialRel=esriSpatialRelIntersects"
+        "&returnGeometry=false"
+        "&outFields=GEOID,NAME,Pop2018,Pop2023,MedHomeVal2018,MedHomeVal2023,TotalRetailSales,TotalBusinesses,PopGrowth2018_2023"
+    )
+    
+    r = requests.get(url, timeout=20)
+    assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:200]}"
+    data = r.json()
+    
+    assert "features" in data and isinstance(data["features"], list)
+    
+    if data["features"]:
+        feature = data["features"][0]
+        attributes = feature.get("attributes", {})
+        
+        print(f"Housing Data Retrieved:")
+        print(f"  Population Growth 2018-2023: {attributes.get('PopGrowth2018_2023')}%" if attributes.get('PopGrowth2018_2023') else "  Population Growth: N/A")
+        print(f"  Home Value Growth: ${attributes.get('MedHomeVal2018'):,} → ${attributes.get('MedHomeVal2023'):,}" if attributes.get('MedHomeVal2018') and attributes.get('MedHomeVal2023') else "  Home Value Growth: N/A")
+        
+        return data
+    else:
+        print("No Opportunity Zone found at this location")
+        return data

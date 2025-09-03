@@ -7,7 +7,7 @@ def test_education_data_directory_query():
     # Query directory for University of Nevada to validate endpoint shape
     # Using correct Urban Institute Education Data API URL structure
     url = (
-        "https://educationdata.urban.org/api/v1/college-university/ipeds/directory/2022/"
+        "https://educationdata.urban.org/api/v1/college-university/ipeds/directory/2022"
         "?name=nevada"
         "&page=1"
     )

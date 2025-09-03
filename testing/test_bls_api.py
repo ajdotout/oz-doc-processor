@@ -2,15 +2,21 @@ import os
 import json
 import requests
 import pytest
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @pytest.mark.timeout(20)
 def test_bls_timeseries_request_succeeds():
-    api_url = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+    api_url = os.getenv("BLS_API_URL", "https://api.bls.gov/publicAPI/v2/timeseries/data/")
     api_key = os.getenv("BLS_API_KEY")
 
+    print(f"Using BLS_API_URL: {api_url}")
     # Unemployment rate (National) as a safe public series; replace/add MSA series later
-    series_ids = ["LNS14000000"]
+    series_ids_str = os.getenv("BLS_TEST_SERIES_IDS", "LNS14000000")
+    print(f"Using BLS_TEST_SERIES_IDS: {series_ids_str}")
+    series_ids = series_ids_str.split(",")
 
     payload = {"seriesid": series_ids}
     if api_key:
@@ -20,6 +26,7 @@ def test_bls_timeseries_request_succeeds():
     assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:200]}"
 
     data = r.json()
+    print(json.dumps(data, indent=4))
     assert data.get("status") == "REQUEST_SUCCEEDED", data
     assert "Results" in data and "series" in data["Results"], data
     series = data["Results"]["series"]
