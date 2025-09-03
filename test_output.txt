@@ -2643,3 +2643,359 @@ Using FRED_TEST_COUNTY_FIPS: 001
 .
 
 ============================== 1 passed in 0.31s ===============================
+============================= test session starts ==============================
+platform darwin -- Python 3.13.5, pytest-8.4.1, pluggy-1.6.0
+rootdir: /Users/aryanjain/Desktop/OZListings/oz-doc-processor
+configfile: pyproject.toml
+plugins: asyncio-1.1.0, timeout-2.4.0, anyio-4.10.0
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 12 items
+
+testing/test_bls_api.py Using BLS_API_URL: https://api.bls.gov/publicAPI/v2/timeseries/data/
+Using BLS_TEST_SERIES_IDS: LNS14000000
+{
+    "status": "REQUEST_SUCCEEDED",
+    "responseTime": 116,
+    "message": [],
+    "Results": {
+        "series": [
+            {
+                "seriesID": "LNS14000000",
+                "data": [
+                    {
+                        "year": "2025",
+                        "period": "M07",
+                        "periodName": "July",
+                        "latest": "true",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2025",
+                        "period": "M06",
+                        "periodName": "June",
+                        "value": "4.1",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2025",
+                        "period": "M05",
+                        "periodName": "May",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2025",
+                        "period": "M04",
+                        "periodName": "April",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2025",
+                        "period": "M03",
+                        "periodName": "March",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2025",
+                        "period": "M02",
+                        "periodName": "February",
+                        "value": "4.1",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2025",
+                        "period": "M01",
+                        "periodName": "January",
+                        "value": "4.0",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M12",
+                        "periodName": "December",
+                        "value": "4.1",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M11",
+                        "periodName": "November",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M10",
+                        "periodName": "October",
+                        "value": "4.1",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M09",
+                        "periodName": "September",
+                        "value": "4.1",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M08",
+                        "periodName": "August",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M07",
+                        "periodName": "July",
+                        "value": "4.2",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M06",
+                        "periodName": "June",
+                        "value": "4.1",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M05",
+                        "periodName": "May",
+                        "value": "4.0",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M04",
+                        "periodName": "April",
+                        "value": "3.9",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M03",
+                        "periodName": "March",
+                        "value": "3.9",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M02",
+                        "periodName": "February",
+                        "value": "3.9",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2024",
+                        "period": "M01",
+                        "periodName": "January",
+                        "value": "3.7",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M12",
+                        "periodName": "December",
+                        "value": "3.8",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M11",
+                        "periodName": "November",
+                        "value": "3.7",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M10",
+                        "periodName": "October",
+                        "value": "3.9",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M09",
+                        "periodName": "September",
+                        "value": "3.8",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M08",
+                        "periodName": "August",
+                        "value": "3.7",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M07",
+                        "periodName": "July",
+                        "value": "3.5",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M06",
+                        "periodName": "June",
+                        "value": "3.6",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M05",
+                        "periodName": "May",
+                        "value": "3.6",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M04",
+                        "periodName": "April",
+                        "value": "3.4",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M03",
+                        "periodName": "March",
+                        "value": "3.5",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M02",
+                        "periodName": "February",
+                        "value": "3.6",
+                        "footnotes": [
+                            {}
+                        ]
+                    },
+                    {
+                        "year": "2023",
+                        "period": "M01",
+                        "periodName": "January",
+                        "value": "3.5",
+                        "footnotes": [
+                            {}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
+.
+testing/test_census_api.py CENSUS_API_KEY loaded: 9f71e878591b59349872a44644f19ad8461a8d66
+
+Testing Population Data Fetch
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+/Users/aryanjain/Desktop/OZListings/oz-doc-processor/.venv/lib/python3.13/site-packages/urllib3/util/connection.py:73: KeyboardInterrupt
+(to show a full traceback on KeyboardInterrupt use --full-trace)
+============================== 1 passed in 7.92s ===============================
+============================= test session starts ==============================
+platform darwin -- Python 3.13.5, pytest-8.4.1, pluggy-1.6.0
+rootdir: /Users/aryanjain/Desktop/OZListings/oz-doc-processor
+configfile: pyproject.toml
+plugins: asyncio-1.1.0, timeout-2.4.0, anyio-4.10.0
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+testing/test_fred_api.py Using FRED_TEST_STATE_FIPS: 06
+Using FRED_TEST_COUNTY_FIPS: 06085
+F
+
+=================================== FAILURES ===================================
+_____________________________ test_fred_county_gdp _____________________________
+
+    @pytest.mark.timeout(20)
+    @pytest.mark.skipif(not os.getenv("FRED_API_KEY"), reason="FRED_API_KEY not set")
+    def test_fred_county_gdp():
+        api_key = os.getenv("FRED_API_KEY")
+        state_fips = os.getenv("TEST_STATE_FIPS", "12")  # Default to Florida
+        county_fips = os.getenv("TEST_COUNTY_FIPS", "001")  # Default to Alachua County
+    
+        print(f"Using FRED_TEST_STATE_FIPS: {state_fips}")
+        print(f"Using FRED_TEST_COUNTY_FIPS: {county_fips}")
+    
+        # Construct the series ID for Real Gross Domestic Product: All Industries by County
+        series_id = f"REALGDPALL{state_fips}{county_fips}"
+    
+        url = (
+            "https://api.stlouisfed.org/fred/series/observations"
+            f"?series_id={series_id}&api_key={api_key}&file_type=json"
+        )
+        r = requests.get(url, timeout=15)
+>       assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:200]}"
+E       AssertionError: HTTP 400: {"error_code":400,"error_message":"Bad Request.  The series does not exist."}
+E       assert 400 == 200
+E        +  where 400 = <Response [400]>.status_code
+
+testing/test_fred_api.py:28: AssertionError
+=========================== short test summary info ============================
+FAILED testing/test_fred_api.py::test_fred_county_gdp - AssertionError: HTTP ...
+============================== 1 failed in 0.39s ===============================

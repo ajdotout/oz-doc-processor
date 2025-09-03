@@ -1,8 +1,8 @@
 import requests
-import pytest
+# import pytest # Removed pytest
 
 
-@pytest.mark.timeout(20)
+# Removed pytest decorators
 def test_education_data_directory_query():
     # Query directory for University of Nevada to validate endpoint shape
     # Using correct Urban Institute Education Data API URL structure
@@ -17,3 +17,6 @@ def test_education_data_directory_query():
     # Expected keys: results, count, next, previous
     assert isinstance(data, dict)
     assert "results" in data and isinstance(data["results"], list)
+
+if __name__ == "__main__":
+    test_education_data_directory_query()

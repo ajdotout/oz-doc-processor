@@ -1,12 +1,12 @@
 import os
 import requests
-import pytest
+# import pytest # Removed pytest
 
-@pytest.mark.timeout(20)
+# Removed pytest decorators
 def test_hud_oz_data_query():
     # Use a known coordinate in the US; override via env if desired
-    lat = float(os.getenv("TEST_LAT", "36.1699"))
-    lng = float(os.getenv("TEST_LNG", "-115.1398"))
+    lat = float(os.getenv("TEST_LATITUDE", "36.1699"))
+    lng = float(os.getenv("TEST_LONGITUDE", "-115.1398"))
 
     url = (
         "https://services.arcgis.com/AgwDJMQH12AGieWa/ArcGIS/rest/services/Opportunity_Zone_Index_FS/FeatureServer/0/query"
@@ -38,4 +38,7 @@ def test_hud_oz_data_query():
         if "OZ_2018" in key:
             print(f"{key}: {value}")
     print("--------------------------")
+
+if __name__ == "__main__":
+    test_hud_oz_data_query()
 

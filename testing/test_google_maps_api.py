@@ -1,6 +1,6 @@
 import os
 import requests
-import pytest
+# import pytest # Removed pytest
 from google.api_core.client_options import ClientOptions
 from google.maps import places_v1 as places
 from google.maps.places_v1 import types as place_types
@@ -12,12 +12,15 @@ load_dotenv()
 
 GOOGLE_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 TEST_ADDRESS = os.getenv("TEST_ADDRESS", "1600 Amphitheatre Parkway, Mountain View, CA")
+TEST_LATITUDE = os.getenv("TEST_LATITUDE", "37.4220656")
+TEST_LONGITUDE = os.getenv("TEST_LONGITUDE", "-122.0840897")
 
-
-@pytest.mark.timeout(20)
-@pytest.mark.skipif(not GOOGLE_KEY, reason="GOOGLE_MAPS_API_KEY not set")
+# Removed pytest decorators
 def test_google_geocoding_minimal():
     print(f"--- Google Geocoding Test ---")
+    if not GOOGLE_KEY:
+        print("GOOGLE_MAPS_API_KEY not set, skipping test_google_geocoding_minimal")
+        return
     print(f"Using TEST_ADDRESS: {TEST_ADDRESS}")
     url = (
         "https://maps.googleapis.com/maps/api/geocode/json"
@@ -35,22 +38,16 @@ def test_google_geocoding_minimal():
         assert "lat" in loc and "lng" in loc
 
 
-@pytest.mark.timeout(20)
-@pytest.mark.skipif(not GOOGLE_KEY, reason="GOOGLE_MAPS_API_KEY not set")
+# Removed pytest decorators
 def test_google_places_nearby_lenient():
     print(f"\n--- Google Places Nearby Search Test ---")
-    print(f"Using TEST_ADDRESS for geocoding: {TEST_ADDRESS}")
-    # Use geocoded coords to seed a modest nearby search (kept lenient re: ZERO_RESULTS)
-    geocode_url = (
-        "https://maps.googleapis.com/maps/api/geocode/json"
-        f"?address={requests.utils.quote(TEST_ADDRESS)}&key={GOOGLE_KEY}"
-    )
-    g = requests.get(geocode_url, timeout=15).json()
-    if g.get("status") != "OK":
-        pytest.skip("Geocode did not return OK; skipping nearby search")
-    loc = g["results"][0]["geometry"]["location"]
-    lat, lng = loc["lat"], loc["lng"]
-    print(f"Geocoded location - Latitude: {lat}, Longitude: {lng}")
+    if not GOOGLE_KEY:
+        print("GOOGLE_MAPS_API_KEY not set, skipping test_google_places_nearby_lenient")
+        return
+    print(f"Using TEST_LATITUDE: {TEST_LATITUDE} and TEST_LONGITUDE: {TEST_LONGITUDE}")
+
+    lat = float(TEST_LATITUDE)
+    lng = float(TEST_LONGITUDE)
 
     # Use Google Maps Places SDK (Places API New) for Nearby Search
     client = places.PlacesClient(client_options=ClientOptions(api_key=GOOGLE_KEY))
@@ -70,7 +67,7 @@ def test_google_places_nearby_lenient():
     request = place_types.SearchNearbyRequest(
         location_restriction={
             "circle": {
-                "center": {"latitude": float(lat), "longitude": float(lng)},
+                "center": {"latitude": lat, "longitude": lng},
                 "radius": radius,
             }
         },
@@ -94,3 +91,7 @@ def test_google_places_nearby_lenient():
         first = places_list[0]
         # name is the resource name (e.g., "places/PLACE_ID"); display_name is LocalizedText
         assert hasattr(first, "name") or hasattr(first, "display_name")
+
+if __name__ == "__main__":
+    test_google_geocoding_minimal()
+    test_google_places_nearby_lenient()

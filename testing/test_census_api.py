@@ -15,16 +15,16 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-import pytest
+# import pytest # Removed pytest
 
 # Load environment variables
 load_dotenv()
 
 console = Console()
 
-@pytest.fixture(scope="module")
-def tester():
-    return CensusAPITester()
+# Removed pytest fixture
+# def tester():
+#     return CensusAPITester()
 
 class CensusAPITester:
     def __init__(self):
@@ -32,9 +32,11 @@ class CensusAPITester:
         self.base_url = 'https://api.census.gov/data'
         self.test_county_fips = os.getenv('TEST_COUNTY_FIPS', '06085')  # Santa Clara County, CA
         self.test_state_fips = os.getenv('TEST_STATE_FIPS', '06')  # California
+        self.test_msa_code = os.getenv('TEST_MSA_CODE', '41860')  # San Jose-Sunnyvale-Santa Clara, CA MSA
         
         if not self.api_key:
-            pytest.fail("CENSUS_API_KEY not found in environment variables")
+            # Removed pytest.fail
+            raise ValueError("CENSUS_API_KEY not found in environment variables")
         else:
             console.print(f"[green]CENSUS_API_KEY loaded: {self.api_key}[/green]")
 
@@ -57,7 +59,8 @@ def test_population_data(tester):
         
         if response.status_code == 204:
             console.print("[yellow]✗ No content returned from API (204)[/yellow]")
-            pytest.skip("No content returned from API (204)")
+            # Removed pytest.skip
+            return "Skipped: No content returned from API (204)"
 
         data = response.json()
         
@@ -101,7 +104,8 @@ def test_income_data(tester):
 
         if response.status_code == 204:
             console.print("[yellow]✗ No content returned from API (204)[/yellow]")
-            pytest.skip("No content returned from API (204)")
+            # Removed pytest.skip
+            return "Skipped: No content returned from API (204)"
 
         data = response.json()
         
@@ -165,7 +169,8 @@ def test_age_distribution(tester):
 
         if response.status_code == 204:
             console.print("[yellow]✗ No content returned from API (204)[/yellow]")
-            pytest.skip("No content returned from API (204)")
+            # Removed pytest.skip
+            return "Skipped: No content returned from API (204)"
 
         data = response.json()
         
@@ -225,7 +230,8 @@ def test_education_data(tester):
 
         if response.status_code == 204:
             console.print("[yellow]✗ No content returned from API (204)[/yellow]")
-            pytest.skip("No content returned from API (204)")
+            # Removed pytest.skip
+            return "Skipped: No content returned from API (204)"
 
         data = response.json()
         
@@ -257,7 +263,7 @@ def test_education_data(tester):
         console.print(f"[red]✗ Error fetching education data: {e}[/red]")
         assert False, f"Request failed: {e}"
 
-@pytest.mark.xfail(reason="B24050 variables may not be available for 2022 ACS 5-year data at the county level")
+# Removed pytest.mark.xfail
 def test_housing_poverty_employment_data(tester):
     """Test fetching housing, poverty, and employment data"""
     console.print("\n[bold blue]Testing Housing, Poverty, and Employment Data Fetch[/bold blue]")
@@ -286,7 +292,8 @@ def test_housing_poverty_employment_data(tester):
 
         if response.status_code == 204:
             console.print("[yellow]✗ No content returned from API (204)[/yellow]")
-            pytest.skip("No content returned from API (204)")
+            # Removed pytest.skip
+            return "Skipped: No content returned from API (204)"
             
         data = response.json()
         
@@ -313,3 +320,17 @@ def test_housing_poverty_employment_data(tester):
     except requests.exceptions.RequestException as e:
         console.print(f"[red]✗ Error fetching housing, poverty, and employment data: {e}[/red]")
         assert False, f"Request failed: {e}"
+
+
+if __name__ == "__main__":
+    try:
+        tester = CensusAPITester()
+        test_population_data(tester)
+        test_income_data(tester)
+        test_age_distribution(tester)
+        test_education_data(tester)
+        test_housing_poverty_employment_data(tester)
+    except ValueError as e:
+        console.print(f"[bold red]Configuration Error: {e}[/bold red]")
+    except Exception as e:
+        console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]")

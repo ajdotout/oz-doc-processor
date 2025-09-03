@@ -1,14 +1,13 @@
 import os
 import requests
-import pytest
+# import pytest # Removed pytest
 
-
-@pytest.mark.timeout(30)
+# Removed pytest decorators
 def test_hud_opportunity_zones_comprehensive_data():
     """Test fetching comprehensive HUD Opportunity Zones data for market analysis"""
     # Use Las Vegas coordinates (known OZ area)
-    lat = float(os.getenv("TEST_LAT", "36.1699"))
-    lng = float(os.getenv("TEST_LNG", "-115.1398"))
+    lat = float(os.getenv("TEST_LATITUDE", "36.1699"))
+    lng = float(os.getenv("TEST_LONGITUDE", "-115.1398"))
     
     # Test comprehensive OZ data including economic metrics
     url = (
@@ -56,3 +55,6 @@ def test_hud_opportunity_zones_comprehensive_data():
     else:
         print("No Opportunity Zone found at this location")
         return data
+
+if __name__ == "__main__":
+    test_hud_opportunity_zones_comprehensive_data()

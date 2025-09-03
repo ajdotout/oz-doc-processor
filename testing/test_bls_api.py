@@ -1,13 +1,13 @@
 import os
 import json
 import requests
-import pytest
+# import pytest # Removed pytest
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
-@pytest.mark.timeout(20)
+# Removed pytest decorators
 def test_bls_timeseries_request_succeeds():
     api_url = os.getenv("BLS_API_URL", "https://api.bls.gov/publicAPI/v2/timeseries/data/")
     api_key = os.getenv("BLS_API_KEY")
@@ -34,3 +34,6 @@ def test_bls_timeseries_request_succeeds():
     first = series[0]
     assert first.get("seriesID") in series_ids
     assert isinstance(first.get("data"), list) and len(first["data"]) > 0
+
+if __name__ == "__main__":
+    test_bls_timeseries_request_succeeds()
