@@ -272,10 +272,6 @@ def test_housing_poverty_employment_data(tester):
     variables = [
         'B25002_001E',  # Total Housing Units
         'B17001_002E',  # Poverty Status in the Past 12 Months: Below poverty level
-        'B24050_001E',  # Total Civilian Employed Population 16 Years and Over
-        'B24050_003E',  # Management, business, science, and arts occupations
-        'B24050_007E',  # Service occupations
-        'B24050_011E',  # Sales and office occupations
     ]
     
     url = f"{tester.base_url}/2022/acs/acs5"

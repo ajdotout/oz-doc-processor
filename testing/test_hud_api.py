@@ -1,6 +1,7 @@
 import os
 import requests
 # import pytest # Removed pytest
+import json
 
 # Removed pytest decorators
 def test_hud_opportunity_zones_comprehensive_data():
@@ -19,19 +20,16 @@ def test_hud_opportunity_zones_comprehensive_data():
         "&inSR=4326"
         "&spatialRel=esriSpatialRelIntersects"
         "&returnGeometry=false"
-        "&outFields="
-        "OZ_2018_Values_Census_Tract_Qua,OZ_2018_Values_Census_Tract_Q_1,OZ_2018_Values_Census_Tract_Q_2,OZ_2018_Values_Census_Tract_Q_3,"
-        "OZ_2018_Values_populationtotals,OZ_2018_Values_keyusfacts_tothh,OZ_2018_Values_retailmarketplac,"
-        "OZ_2018_Values_industrybynaicsc,OZ_2018_Values_gender_medage_cy,OZ_2018_Values_householdincome_,"
-        "OZ_2018_Values_wealth_medval_cy,OZ_2018_Values_householdincome1,OZ_2018_Values_wealth_medval_fy,"
-        "OZ_2018_Values_educationalattai,OZ_2018_Values_industry_unemprt,OZ_2018_Values_populationtota_1,"
-        "OZ_2018_Values_businesses_n01_b,OZ_2018_Values_employees_n01_em,OZ_2018_Values_raceandhispanico"
+        "&outFields=OZ_2018_Values_Census_Tract_Qua,OZ_2018_Values_Census_Tract_Q_1,OZ_2018_Values_Census_Tract_Q_2,OZ_2018_Values_Census_Tract_Q_3,OZ_2018_Values_populationtotals,OZ_2018_Values_keyusfacts_tothh,OZ_2018_Values_retailmarketplac,OZ_2018_Values_industrybynaicsc,OZ_2018_Values_gender_medage_cy,OZ_2018_Values_householdincome_,OZ_2018_Values_wealth_medval_cy,OZ_2018_Values_householdincome1,OZ_2018_Values_wealth_medval_fy,OZ_2018_Values_educationalattai,OZ_2018_Values_industry_unemprt,OZ_2018_Values_populationtota_1,OZ_2018_Values_businesses_n01_b,OZ_2018_Values_employees_n01_em,OZ_2018_Values_raceandhispanico,Location,OZRanks_ExcelToTableUpdated_N_3"
     )
     
     r = requests.get(url, timeout=20)
     assert r.status_code == 200, f"HTTP {r.status_code}: {r.text[:200]}"
     data = r.json()
     
+    print("\nFull JSON Response:")
+    print(json.dumps(data, indent=2))
+
     # Check response structure
     assert "features" in data and isinstance(data["features"], list)
     
@@ -41,7 +39,9 @@ def test_hud_opportunity_zones_comprehensive_data():
         
         # Print only essential identification data and a summary of fetched attributes
         print(f"OZ Data Retrieved for GEOID: {attributes.get('OZ_2018_Values_Census_Tract_Qua')}")
-        print(f"  State: {attributes.get('OZ_2018_Values_Census_Tract_Q_1')}, County: {attributes.get('OZ_2018_Values_Census_Tract_Q_2')}")
+        print(f"  State: {attributes.get('OZ_2018_Values_Census_Tract_Q_1', 'N/A')}, County: {attributes.get('OZ_2018_Values_Census_Tract_Q_2', 'N/A')}")
+        print(f"  Location (County and State): {attributes.get('Location', 'N/A')}")
+        print(f"  OZ Rank: {attributes.get('OZRanks_ExcelToTableUpdated_N_3', 'N/A')}")
         print(f"  Fetched {len(attributes)} attributes.")
 
         # Verify we have the key data fields for OZ identification and some economic metrics
@@ -50,6 +50,7 @@ def test_hud_opportunity_zones_comprehensive_data():
         assert attributes.get('OZ_2018_Values_Census_Tract_Q_2') is not None, "Missing County for OZ identification"
         assert attributes.get('OZ_2018_Values_populationtotals') is not None, "Missing population totals data"
         assert attributes.get('OZ_2018_Values_householdincome1') is not None, "Missing 2023 median household income"
+        assert attributes.get('OZRanks_ExcelToTableUpdated_N_3') is not None, "Missing OZ Rank data"
         
         return data
     else:
