@@ -21,7 +21,8 @@ class BaseExtractor(ABC):
         
         self.agent = Agent(
             self.model,
-            system_prompt=self.get_system_prompt(),
+            instructions=self.get_system_prompt(),
+            output_type=self.get_output_type(),
         )
 
     @abstractmethod
@@ -30,7 +31,7 @@ class BaseExtractor(ABC):
         pass
 
     @abstractmethod
-    def get_response_model(self) -> Type[BaseModel]:
+    def get_output_type(self) -> Type[BaseModel]:
         """Returns the Pydantic model for the expected response."""
         pass
 
@@ -39,9 +40,9 @@ class BaseExtractor(ABC):
         logging.info(f"Starting extraction with {self.__class__.__name__}...")
         
         try:
-            result = self.agent.run_sync(f"Extract data from the following document:\n\n{markdown_content}", result_type=self.get_response_model())
+            result = self.agent.run_sync(f"Extract data from the following document:\n\n{markdown_content}")
             logging.info(f"Extraction successful for {self.__class__.__name__}.")
-            return result.data
+            return result.output
         except Exception as e:
             logging.error(f"Extraction failed for {self.__class__.__name__}: {e}")
             raise e
