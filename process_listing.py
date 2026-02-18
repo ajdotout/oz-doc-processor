@@ -5,6 +5,7 @@ import base64
 import sys
 from pathlib import Path
 from mistral_ocr import ocr_with_mistral, parse_and_save_markdown
+from excel_processor import process_excel_to_markdown
 from dotenv import load_dotenv
 
 # Set up logging
@@ -14,6 +15,10 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
     """
     Extracts images from the OCR JSON response and saves them as actual image files.
     """
+    if not os.path.exists(json_path):
+        logging.warning("No OCR JSON found. Skipping image extraction (likely an Excel document).")
+        return 0
+        
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     with open(json_path, 'r') as f:
@@ -92,9 +97,11 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
 
 def process_listing(listing_name: str):
     """
-    Full pipeline for a listing: OCR -> Markdown -> Image Extraction
+    Full pipeline for a listing: 
+    Iterates through ALL PDF and Excel files in the directory and 
+    consolidates them into one grand Markdown document.
     """
-    # Convert listing name to capitalized for directory and lowercase for filenames
+    # Convert listing name to capitalized for directory
     listing_dir = Path(f"listing-docs/{listing_name}")
     if not listing_dir.exists():
         # Try finding it case-insensitively
@@ -110,38 +117,74 @@ def process_listing(listing_name: str):
             logging.error(f"Listing directory {listing_dir} does not exist.")
             return
 
-    # Find PDF file
-    pdf_files = list(listing_dir.glob("*.pdf"))
-    if not pdf_files:
-        logging.error(f"No PDF files found in {listing_dir}")
-        return
+    # Find relevant listing documents (.pdf, .xlsx, .xls)
+    all_files = sorted(list(listing_dir.glob("*"))) # Sorted to maintain consistent order
+    process_files = [f for f in all_files if f.suffix.lower() in [".pdf", ".xlsx", ".xls"]]
     
-    pdf_path = pdf_files[0]
+    if not process_files:
+        logging.error(f"No PDF or Excel files found in {listing_dir}")
+        return
+
     base_name = listing_name.lower().replace(" ", "_")
-    json_path = listing_dir / f"{base_name}_ocr.json"
     markdown_path = listing_dir / f"{base_name}_markdown.md"
     images_dir = listing_dir / "images"
+    
+    consolidated_markdown = [f"# Listing Context: {listing_name}\n\n"]
 
-    logging.info(f"Processing listing: {listing_name}")
-    logging.info(f"PDF Path: {pdf_path}")
+    logging.info(f"📁 Processing {len(process_files)} files in {listing_dir}...")
 
-    # Step 1: OCR
-    logging.info("Step 1: Running Mistral OCR (this may take a minute)...")
-    ocr_with_mistral(str(pdf_path), str(json_path))
+    for doc_path in process_files:
+        ext = doc_path.suffix.lower()
+        file_md = ""
+        
+        logging.info(f"🔍 Processing: {doc_path.name}")
 
-    # Step 2: Extract Markdown
-    logging.info("Step 2: Extracting Markdown...")
-    parse_and_save_markdown(str(json_path), str(markdown_path))
+        if ext == ".pdf":
+            # 1. Mistral OCR
+            temp_json = listing_dir / f"temp_{doc_path.stem}_ocr.json"
+            temp_md = listing_dir / f"temp_{doc_path.stem}.md"
+            
+            try:
+                ocr_with_mistral(str(doc_path), str(temp_json))
+                parse_and_save_markdown(str(temp_json), str(temp_md))
+                extract_images_from_ocr(str(temp_json), str(images_dir))
+                
+                with open(temp_md, 'r') as f:
+                    file_md = f.read()
+                
+                # Cleanup temp files if desired, or keep for debugging
+                # os.remove(temp_json)
+                # os.remove(temp_md)
+                
+            except Exception as e:
+                logging.error(f"Error processing PDF {doc_path.name}: {e}")
+                continue
 
-    # Step 3: Extract Images
-    logging.info("Step 3: Extracting Images...")
-    image_count = extract_images_from_ocr(str(json_path), str(images_dir))
-    logging.info(f"Extracted {image_count} images to {images_dir}")
+        elif ext in [".xlsx", ".xls"]:
+            # 2. Excel Grid Converter
+            temp_md = listing_dir / f"temp_{doc_path.stem}.md"
+            try:
+                process_excel_to_markdown(str(doc_path), str(temp_md))
+                with open(temp_md, 'r') as f:
+                    file_md = f.read()
+                # os.remove(temp_md)
+            except Exception as e:
+                logging.error(f"Error processing Excel {doc_path.name}: {e}")
+                continue
 
-    logging.info(f"Processing complete for {listing_name}!")
-    logging.info(f"JSON: {json_path}")
-    logging.info(f"Markdown: {markdown_path}")
-    logging.info(f"Images: {images_dir}/")
+        if file_md:
+            header = f"\n\n{'='*40}\n"
+            header += f"SOURCE FILE: {doc_path.name}\n"
+            header += f"{'='*40}\n\n"
+            consolidated_markdown.append(header + file_md)
+
+    # Save the grand consolidated markdown
+    with open(markdown_path, 'w') as f:
+        f.write("".join(consolidated_markdown))
+
+    logging.info(f"🚀 CONSOLIDATION COMPLETE for {listing_name}!")
+    logging.info(f"Final Consolidated Markdown: {markdown_path}")
+
 
 if __name__ == "__main__":
     load_dotenv()
