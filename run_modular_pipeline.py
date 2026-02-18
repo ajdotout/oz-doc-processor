@@ -109,8 +109,6 @@ async def main():
 
     final_listing = {
         "listingName": overview_data.hero.listingName,
-        "listingSlug": overview_data.hero.listingName.lower().replace(" ", "-"), # Simple slug generation
-        "projectId": "generated-id", # Placeholder
         "sections": sections,
         "details": details
     }
@@ -118,7 +116,7 @@ async def main():
     # Save output
     output_dir = os.path.dirname(markdown_path)
     base_name = os.path.splitext(os.path.basename(markdown_path))[0]
-    output_path = os.path.join(output_dir, f"{base_name}_modular_listing.json")
+    output_path = os.path.join(output_dir, f"{base_name}_modular_listing_gemini3.json")
 
     with open(output_path, 'w') as f:
         json.dump(final_listing, f, indent=2)
