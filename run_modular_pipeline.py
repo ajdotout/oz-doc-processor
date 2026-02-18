@@ -88,28 +88,120 @@ async def main():
     
     # Helper to convert Pydantic model to dict
     def to_dict(model):
-        return model.model_dump()
+        if hasattr(model, 'model_dump'):
+            return model.model_dump()
+        return model
+
+    # Helper to wrap in block structure
+    def to_block(type_name, data):
+        return {"type": type_name, "data": to_dict(data)}
 
     # Overview Data (Sections)
     sections = [
-        to_dict(overview_data.hero),
-        to_dict(overview_data.tickerMetrics),
-        to_dict(overview_data.compellingReasons),
-        to_dict(overview_data.executiveSummary),
-        to_dict(overview_data.investmentCards)
+        to_block("hero", overview_data.hero),
+        to_block("tickerMetrics", overview_data.tickerMetrics),
+        to_block("compellingReasons", overview_data.compellingReasons),
+        to_block("executiveSummary", overview_data.executiveSummary),
+        to_block("investmentCards", overview_data.investmentCards)
     ]
+
+    # Helper for detail page construction
+    def build_detail_page(title, subtitle, sections_data):
+        page_sections = []
+        for s_type, s_data in sections_data:
+            if s_data:
+                page_sections.append(to_block(s_type, s_data))
+        return {
+            "pageTitle": title,
+            "pageSubtitle": subtitle,
+            "backgroundImages": [],
+            "sections": page_sections
+        }
 
     # Details Data
     details = {
-        "financialReturns": to_dict(financial_data),
-        "propertyOverview": to_dict(property_data),
-        "marketAnalysis": to_dict(market_data),
-        "sponsorProfile": to_dict(sponsor_data)
+        "financialReturns": build_detail_page(
+            "Financial Returns", 
+            "Detailed financial projections and investment structure",
+            [
+                ("projections", financial_data.projections),
+                ("capitalStack", financial_data.capitalStack),
+                ("distributionTimeline", financial_data.timeline),
+                ("taxBenefits", financial_data.taxBenefits),
+                ("investmentStructure", financial_data.structure),
+                ("distributionWaterfall", financial_data.waterfall)
+            ]
+        ),
+        "propertyOverview": build_detail_page(
+            "Property Overview",
+            "Physical asset details and site characteristics",
+            [
+                ("keyFacts", property_data.keyFacts),
+                ("amenities", property_data.amenities),
+                ("unitMix", property_data.unitMix),
+                ("locationHighlights", property_data.locationHighlights),
+                ("locationFeatures", property_data.locationFeatures),
+                ("developmentTimeline", property_data.timeline),
+                ("developmentPhases", property_data.phases)
+            ]
+        ),
+        "marketAnalysis": build_detail_page(
+            "Market Analysis",
+            "Local economic drivers and competitive landscape",
+            [
+                ("marketMetrics", market_data.metrics),
+                ("majorEmployers", market_data.employers),
+                ("demographics", market_data.demographics),
+                ("keyMarketDrivers", market_data.drivers),
+                ("supplyDemand", market_data.supplyDemand),
+                ("competitiveAnalysis", market_data.competitors),
+                ("economicDiversification", market_data.diversification)
+            ]
+        ),
+        "sponsorProfile": {
+            "sponsorName": sponsor_data.intro.sponsorName if sponsor_data.intro else "Sponsor Profile",
+            "sections": [
+                to_block(t, d) for t, d in [
+                    ("sponsorIntro", sponsor_data.intro),
+                    ("partnershipOverview", sponsor_data.partnership),
+                    ("trackRecord", sponsor_data.trackRecord),
+                    ("leadershipTeam", sponsor_data.team),
+                    ("keyDevelopmentPartners", sponsor_data.keyPartners),
+                    ("competitiveAdvantages", sponsor_data.advantages)
+                ] if d
+            ]
+        }
     }
+
+    # Add optional detail pages
+    if sponsor_data.portfolio:
+        details["portfolioProjects"] = build_detail_page(
+            "Portfolio Projects",
+            "Overview of the assets currently in the portfolio",
+            [("projectOverview", sponsor_data.portfolio)]
+        )
+
+    if sponsor_data.fundEntities or sponsor_data.fundDetails:
+        details["fundStructure"] = build_detail_page(
+            "Fund Structure",
+            "Entity structure and legal framework of the fund",
+            [
+                ("fundSponsorEntities", sponsor_data.fundEntities),
+                ("fundDetails", sponsor_data.fundDetails)
+            ]
+        )
+
+    if sponsor_data.participationSteps:
+        details["howInvestorsParticipate"] = build_detail_page(
+            "How to Participate",
+            "Next steps for qualified investors",
+            [("participationSteps", sponsor_data.participationSteps)]
+        )
 
     final_listing = {
         "listingName": overview_data.hero.listingName,
         "sections": sections,
+        "newsLinks": to_dict(overview_data.newsLinks) if overview_data.newsLinks else [],
         "details": details
     }
     

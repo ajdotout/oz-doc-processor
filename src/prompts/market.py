@@ -24,10 +24,12 @@ Focus ONLY on the following sections:
 ### 4. KEY MARKET DRIVERS
 - **Goal**: Exactly 4 cards explaining *why* this market is strong.
 - **Constraint**: **EXACTLY 4 items**.
+- **Icons**: Choose a relevant Lucide icon name (e.g., "TrendingUp", "Users", "MapPin").
 - **Examples**: "Tech Hub Expansion", "University Growth", "Transit Connectivity".
 
 ### 5. SUPPLY & DEMAND (Optional)
 - **Goal**: Quantitative/Qualitative balance.
+- **Icons**: Choose a relevant Lucide icon name (e.g., "Home", "Building2", "LineChart").
 - **Items**: Absorption rates, Delivery pipeline, Occupancy trends.
 
 ### 6. COMPETITIVE ANALYSIS (Optional)

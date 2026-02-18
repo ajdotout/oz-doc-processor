@@ -37,10 +37,22 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
     - `paragraphs`: **EXACTLY A LIST OF 2 STRINGS**. concise paragraphs (3-4 sentences each).
     - `conclusion`: A final closing sentence summarizing the opportunity.
 
-### 5. INVESTMENT CARDS (Summary)
-- **Goal**: Summaries for the detail pages.
-- **Constraint**: Populate the `cards` array for 'financial-returns', 'property-overview', 'market-analysis', and 'sponsor-profile'.
-- **Metrics**: Select the top 3 metrics for each card that best represent that section.
+### 5. INVESTMENT CARDS (Summary & Selection)
+- **Goal**: Select EXACTLY 4 detail page links to display in the 2x2 grid.
+- **Constraints**: 
+    - **Total Cards**: EXACTLY 4.
+    - **Logic & Ordering**:
+        1. **Card 1 (Value)**: Choose 'financial-returns' (default) OR 'how-investors-participate' if the deal emphasizes the subscription process or is in its final funding phase.
+        2. **Card 2 (Product)**: Choose 'property-overview' (default) OR 'portfolio-projects' if the document describes a fund/collection of assets rather than a single development.
+        3. **Card 3 (Context)**: Always 'market-analysis'.
+        4. **Card 4 (Trust)**: Always 'sponsor-profile'.
+- **Metrics**: Select the top 3 metrics for each card that best represent that specific section.
+- **Sponsor Profile Formatting**:
+    - `title`: MUST be exactly "Sponsor Profile" (do not include the sponsor's name in the title).
+    - `keyMetrics`: 
+        - The FIRST metric MUST have `label`: "Sponsor Name" and `value`: the actual name of the sponsor.
+        - The remaining 2 metrics should be credibility markers (e.g., "Years Active", "Units Built").
+- **IDs**: Use exactly one of the IDs: 'financial-returns', 'property-overview', 'market-analysis', 'sponsor-profile', 'portfolio-projects', 'how-investors-participate'.
 
 ### 6. NEWS LINKS (Optional)
 - Extract external validation links if present (news articles, press releases).
@@ -65,7 +77,7 @@ class TickerMetricsSectionData(BaseModel):
 class CompellingReason(BaseModel):
     title: str = Field(..., description="Short title, e.g. '100% Tax-Free Growth'")
     description: str = Field(..., description="1-2 sentences explaining the benefit.")
-    highlight: Optional[str] = Field(None, description="Short highlight text if applicable")
+    highlight: str = Field(..., description="Short highlight text, e.g. '5-Minute Walk'")
     icon: str = Field(..., description="Lucide icon name, e.g. 'Rocket'")
 
 class CompellingReasonsSectionData(BaseModel):
@@ -90,7 +102,7 @@ class InvestmentCard(BaseModel):
     summary: str
 
 class InvestmentCardsSectionData(BaseModel):
-    cards: List[InvestmentCard]
+    cards: List[InvestmentCard] = Field(..., min_length=4, max_length=4, description="Exactly 4 investment summary cards")
 
 class NewsCardMetadata(BaseModel):
     url: str

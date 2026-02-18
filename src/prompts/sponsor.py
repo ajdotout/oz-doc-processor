@@ -38,9 +38,17 @@ You are an expert Real Estate Due Diligence Officer. Your goal is to extract the
 
 # --- Schema ---
 
+class SponsorHighlightItem(BaseModel):
+    icon: Optional[str] = Field(None, description="Lucide icon name")
+    text: str
+
+class SponsorHighlights(BaseModel):
+    type: Literal['list', 'icons']
+    items: List[SponsorHighlightItem]
+
 class SponsorIntroContent(BaseModel):
     paragraphs: List[str]
-    highlights: dict  # { "type": "icons" | "list", "items": [...] }
+    highlights: SponsorHighlights
 
 class SponsorIntroSectionData(BaseModel):
     sponsorName: str
@@ -98,11 +106,16 @@ class CompetitiveAdvantage(BaseModel):
 class CompetitiveAdvantagesSectionData(BaseModel):
     advantages: List[CompetitiveAdvantage]
 
+class SponsorTeamMember(BaseModel):
+    name: str
+    title: str
+    roleDetail: Optional[str] = None
+
 class SponsorEntity(BaseModel):
     name: str
     role: str
     descriptionPoints: List[str]
-    team: List[dict]
+    team: List[SponsorTeamMember]
 
 class FundSponsorEntitiesSectionData(BaseModel):
     entities: List[SponsorEntity]

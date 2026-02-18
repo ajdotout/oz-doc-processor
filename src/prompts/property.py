@@ -25,6 +25,7 @@ Focus ONLY on the following sections:
 ### 4. LOCATION HIGHLIGHTS
 - **Goal**: Three cards highlighting the micro-location (e.g. "Walk Score", "Transit Oriented", "University Proximity").
 - **Constraint**: **EXACTLY 3 items**.
+- **Icons**: Choose a relevant Lucide icon name (e.g., "Navigation", "Car", "School").
 
 ### 5. DEVELOPMENT TIMELINE/PHASES
 - If the project is under construction/multi-phase, extract the timeline status (Completed vs In Progress) and phase breakdown (Phase I units vs Phase II units).
@@ -53,9 +54,13 @@ class UnitMixItem(BaseModel):
     sqft: str
     rent: str
 
+class SpecialFeatures(BaseModel):
+    title: str
+    description: str
+
 class UnitMixSectionData(BaseModel):
     unitMix: List[UnitMixItem]
-    specialFeatures: Optional[dict] = Field(None, description="Optional title and description of unit features")
+    specialFeatures: Optional[SpecialFeatures] = Field(None, description="Optional title and description of unit features")
 
 class LocationHighlight(BaseModel):
     title: str
