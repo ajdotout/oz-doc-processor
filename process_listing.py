@@ -11,18 +11,24 @@ from dotenv import load_dotenv
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+import asyncio
+
 def extract_images_from_ocr(json_path: str, output_dir: str):
     """
     Extracts images from the OCR JSON response and saves them as actual image files.
     """
     if not os.path.exists(json_path):
-        logging.warning("No OCR JSON found. Skipping image extraction (likely an Excel document).")
+        logging.warning(f"No OCR JSON found at {json_path}. Skipping image extraction.")
         return 0
         
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        logging.error(f"Failed to load OCR JSON at {json_path}: {e}")
+        return 0
 
     image_count = 0
     image_descriptions = []
@@ -51,7 +57,7 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
                             with open(filepath, "wb") as f:
                                 f.write(decoded_image)
 
-                            logging.info(f"Saved image: {filename}")
+                            logging.info(f"Saved image: {filename} to {output_dir}")
 
                             annotation_info = {
                                 "filename": filename,
@@ -66,7 +72,6 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
 
                             # Extract annotation if available
                             if "image_annotation" in image and image["image_annotation"]:
-                                # It might be a dict already if loaded from JSON or a string
                                 ann = image["image_annotation"]
                                 if isinstance(ann, str):
                                     try:
@@ -95,7 +100,7 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
 
     return image_count
 
-def process_listing(listing_name: str):
+async def process_listing(listing_name: str):
     """
     Full pipeline for a listing: 
     Iterates through ALL PDF and Excel files in the directory and 
@@ -104,7 +109,6 @@ def process_listing(listing_name: str):
     # Convert listing name to capitalized for directory
     listing_dir = Path(f"listing-docs/{listing_name}")
     if not listing_dir.exists():
-        # Try finding it case-insensitively
         parent = Path("listing-docs")
         found = False
         for d in parent.iterdir():
@@ -118,65 +122,63 @@ def process_listing(listing_name: str):
             return
 
     # Find relevant listing documents (.pdf, .xlsx, .xls)
-    all_files = sorted(list(listing_dir.glob("*"))) # Sorted to maintain consistent order
+    all_files = sorted(list(listing_dir.glob("*"))) 
     process_files = [f for f in all_files if f.suffix.lower() in [".pdf", ".xlsx", ".xls"]]
     
     if not process_files:
         logging.error(f"No PDF or Excel files found in {listing_dir}")
         return
 
-    base_name = listing_name.lower().replace(" ", "_")
+    base_name = listing_name.lower().replace(" ", "_").replace("-", "_")
     markdown_path = listing_dir / f"{base_name}_markdown.md"
     images_dir = listing_dir / "images"
+    temp_dir = listing_dir / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
     
-    consolidated_markdown = [f"# Listing Context: {listing_name}\n\n"]
+    logging.info(f"📁 Processing {len(process_files)} files in parallel for {listing_name}...")
 
-    logging.info(f"📁 Processing {len(process_files)} files in {listing_dir}...")
-
-    for doc_path in process_files:
+    async def process_file(doc_path: Path):
         ext = doc_path.suffix.lower()
         file_md = ""
-        
-        logging.info(f"🔍 Processing: {doc_path.name}")
+        logging.info(f"🔍 Starting: {doc_path.name}")
 
-        if ext == ".pdf":
-            # 1. Mistral OCR
-            temp_json = listing_dir / f"temp_{doc_path.stem}_ocr.json"
-            temp_md = listing_dir / f"temp_{doc_path.stem}.md"
+        try:
+            if ext == ".pdf":
+                temp_json = temp_dir / f"{doc_path.stem}_ocr.json"
+                temp_md = temp_dir / f"{doc_path.stem}.md"
+                # Store images in a per-file subdirectory
+                file_images_dir = images_dir / doc_path.stem
+                
+                # Run OCR in a separate thread
+                await asyncio.to_thread(ocr_with_mistral, str(doc_path), str(temp_json))
+                await asyncio.to_thread(parse_and_save_markdown, str(temp_json), str(temp_md))
+                await asyncio.to_thread(extract_images_from_ocr, str(temp_json), str(file_images_dir))
+                
+                with open(temp_md, 'r') as f:
+                    file_md = f.read()
+
+            elif ext in [".xlsx", ".xls"]:
+                temp_md = temp_dir / f"{doc_path.stem}.md"
+                await asyncio.to_thread(process_excel_to_markdown, str(doc_path), str(temp_md))
+                with open(temp_md, 'r') as f:
+                    file_md = f.read()
+
+            if file_md:
+                header = f"\n\n{'='*40}\n"
+                header += f"SOURCE FILE: {doc_path.name}\n"
+                header += f"{'='*40}\n\n"
+                return header + file_md
             
-            try:
-                ocr_with_mistral(str(doc_path), str(temp_json))
-                parse_and_save_markdown(str(temp_json), str(temp_md))
-                extract_images_from_ocr(str(temp_json), str(images_dir))
-                
-                with open(temp_md, 'r') as f:
-                    file_md = f.read()
-                
-                # Cleanup temp files if desired, or keep for debugging
-                # os.remove(temp_json)
-                # os.remove(temp_md)
-                
-            except Exception as e:
-                logging.error(f"Error processing PDF {doc_path.name}: {e}")
-                continue
+        except Exception as e:
+            logging.error(f"Error processing {doc_path.name}: {e}")
+        
+        return ""
 
-        elif ext in [".xlsx", ".xls"]:
-            # 2. Excel Grid Converter
-            temp_md = listing_dir / f"temp_{doc_path.stem}.md"
-            try:
-                process_excel_to_markdown(str(doc_path), str(temp_md))
-                with open(temp_md, 'r') as f:
-                    file_md = f.read()
-                # os.remove(temp_md)
-            except Exception as e:
-                logging.error(f"Error processing Excel {doc_path.name}: {e}")
-                continue
-
-        if file_md:
-            header = f"\n\n{'='*40}\n"
-            header += f"SOURCE FILE: {doc_path.name}\n"
-            header += f"{'='*40}\n\n"
-            consolidated_markdown.append(header + file_md)
+    # Process all files in parallel
+    results = await asyncio.gather(*(process_file(f) for f in process_files))
+    
+    consolidated_markdown = [f"# Listing Context: {listing_name}\n\n"]
+    consolidated_markdown.extend([r for r in results if r])
 
     # Save the grand consolidated markdown
     with open(markdown_path, 'w') as f:
@@ -184,12 +186,13 @@ def process_listing(listing_name: str):
 
     logging.info(f"🚀 CONSOLIDATION COMPLETE for {listing_name}!")
     logging.info(f"Final Consolidated Markdown: {markdown_path}")
+    return str(markdown_path)
 
 
 if __name__ == "__main__":
     load_dotenv()
     if len(sys.argv) > 1:
-        process_listing(sys.argv[1])
+        asyncio.run(process_listing(sys.argv[1]))
     else:
         # Default to Celadon
-        process_listing("Celadon")
+        asyncio.run(process_listing("Celadon"))

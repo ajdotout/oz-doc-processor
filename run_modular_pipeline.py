@@ -36,15 +36,10 @@ async def run_agent_in_thread(agent, content):
     """Runs a blocking agent.run() method in a separate thread."""
     return await asyncio.to_thread(agent.run, content)
 
-async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python run_modular_pipeline.py <path_to_markdown_file>")
-        sys.exit(1)
-
-    markdown_path = sys.argv[1]
+async def run_pipeline(markdown_path: str):
     if not os.path.exists(markdown_path):
         logging.error(f"File not found: {markdown_path}")
-        sys.exit(1)
+        return None
 
     load_environment()
 
@@ -71,26 +66,26 @@ async def main():
         return_exceptions=True
     )
 
-    overview_data, financial_data, property_data, market_data, sponsor_data = results
-
     # Check for exceptions
     for i, res in enumerate(results):
         if isinstance(res, Exception):
             logging.error(f"Agent {i} failed with error: {res}")
-            # Decide whether to abort or continue. For now, aborting.
-            sys.exit(1)
+            return None
+
+    overview_data, financial_data, property_data, market_data, sponsor_data = results
 
     logging.info("All agents completed successfully. Assembling final JSON...")
 
     # Construct the final Listing structure
-    # Note: Mapping logic based on expected Listing structure in gemini_processor.py
-    # and the Pydantic models returned by the agents.
-    
-    # Helper to convert Pydantic model to dict
-    def to_dict(model):
-        if hasattr(model, 'model_dump'):
-            return model.model_dump()
-        return model
+    # Helper to convert Pydantic model to dict (recursively handling lists/dicts)
+    def to_dict(obj):
+        if hasattr(obj, 'model_dump'):
+            return obj.model_dump()
+        if isinstance(obj, list):
+            return [to_dict(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: to_dict(v) for k, v in obj.items()}
+        return obj
 
     # Helper to wrap in block structure
     def to_block(type_name, data):
@@ -214,6 +209,15 @@ async def main():
         json.dump(final_listing, f, indent=2)
 
     logging.info(f"Pipeline complete. Output saved to: {output_path}")
+    return output_path
+
+async def main():
+    if len(sys.argv) < 2:
+        print("Usage: python run_modular_pipeline.py <path_to_markdown_file>")
+        sys.exit(1)
+
+    markdown_path = sys.argv[1]
+    await run_pipeline(markdown_path)
 
 if __name__ == "__main__":
     asyncio.run(main())
