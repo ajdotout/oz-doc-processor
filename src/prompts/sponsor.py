@@ -24,7 +24,8 @@ You are an expert Real Estate Due Diligence Officer. Your goal is to extract the
 - **Fields**: Name, Location, Units, Status (Completed/In Progress), Returns (IRR) or Focus.
 
 ### 5. PARTNERSHIP OVERVIEW (Optional)
-- **Goal**: If multiple entities exist (e.g., "Developer" vs "Fund Manager"), explain distinct roles.
+- **Goal**: If multiple entities exist (e.g., "General Partner", "Developer", "Sponsor"), list each with role + entity in **name** (e.g. "General Partner — Camp Verde Landmark Partners, LLC") and the exact role description in **description**.
+- **whyItMatters**: If the deck has a "Why it matters for investors" (or similar) section with bullet points, populate as a list of strings.
 
 ### 6. FUND STRUCTURE (New/Codebase Specific)
 - **Goal**: If strict fund details are separate from the intro, extract them here.
@@ -60,6 +61,7 @@ class PartnershipOverviewPartner(BaseModel):
 
 class PartnershipOverviewSectionData(BaseModel):
     partners: List[PartnershipOverviewPartner]
+    whyItMatters: Optional[List[str]] = None
 
 class TrackRecordMetric(BaseModel):
     label: str
