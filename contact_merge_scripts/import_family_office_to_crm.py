@@ -49,7 +49,7 @@ CSV_PATH = "/Users/aryanjain/Documents/OZL/UsefulDocs/FamilyOfficeDatabase-Lists
 
 BATCH_SIZE = 500
 
-PEOPLE_TAGS = ["family_office"]
+PEOPLE_TAGS = ["family-office"]
 
 console = Console()
 

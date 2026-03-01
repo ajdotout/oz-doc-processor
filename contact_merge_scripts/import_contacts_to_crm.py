@@ -18,7 +18,7 @@ Data flow per contact:
   contacts.location      → people.details.location
   contacts.source        → person_emails.source
   contacts.globally_bounced      → emails.status = 'bounced'
-  contacts.globally_unsubscribed → emails.status = 'suppressed'
+  contacts.globally_unsubscribed → emails.status = 'unsubscribed'
   contacts.suppression_*         → emails.metadata
 
 Merge rules:
@@ -80,6 +80,15 @@ def normalize_phone(val) -> Optional[str]:
     if len(digits) < 7 or all(c == "0" for c in digits):
         return None
     return digits
+
+
+def normalize_linkedin(val) -> Optional[str]:
+    s = clean_str(val)
+    if not s:
+        return None
+    s = s.strip().rstrip("/")
+    s = s.split("?")[0]  # strip query params
+    return s.lower()
 
 
 def split_name(full_name: str) -> tuple[Optional[str], Optional[str]]:
@@ -238,9 +247,12 @@ def main():
     existing_pe = fetch_all(supabase, "person_emails", "person_id,email_id")
     existing_po = fetch_all(supabase, "person_organizations", "person_id,organization_id")
     existing_pp = fetch_all(supabase, "person_phones", "person_id,phone_id")
+    existing_linkedins = fetch_all(supabase, "linkedin_profiles", "id,url")
+    existing_pl = fetch_all(supabase, "person_linkedin", "person_id,linkedin_id")
 
     console.print(f"  → emails: {len(existing_emails):,}  phones: {len(existing_phones):,}  "
-                  f"orgs: {len(existing_orgs):,}  people: {len(existing_people):,}")
+                  f"orgs: {len(existing_orgs):,}  people: {len(existing_people):,}  "
+                  f"linkedin: {len(existing_linkedins):,}")
 
     # ── Build lookup maps ────────────────────────────────────────────────────
     email_id_map = {e["address"].lower().strip(): e["id"]
@@ -260,10 +272,14 @@ def main():
     # person_id → person record
     person_map = {p["id"]: p for p in existing_people}
 
+    # LinkedIn URL → id
+    linkedin_id_map = {li["url"]: li["id"] for li in existing_linkedins if li.get("url")}
+
     # existing junction sets (to avoid duplicate inserts)
     existing_pe_set = {(pe["person_id"], pe["email_id"]) for pe in existing_pe}
     existing_po_set = {(po["person_id"], po["organization_id"]) for po in existing_po}
     existing_pp_set = {(pp["person_id"], pp["phone_id"]) for pp in existing_pp}
+    existing_pl_set = {(pl["person_id"], pl["linkedin_id"]) for pl in existing_pl}
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 2: Collect unique entities from contacts
@@ -275,6 +291,7 @@ def main():
     emails_to_upsert: dict[str, dict] = {}     # address → record
     phones_to_upsert: dict[str, dict] = {}     # digits → record
     orgs_to_upsert: dict[str, dict] = {}       # name_lower → record
+    linkedins_to_upsert: dict[str, dict] = {}   # normalized_url → record
     seen_contact_emails: set[str] = set()       # handle the 4 duplicate emails
 
     # Per-contact parsed data for phase 4
@@ -306,6 +323,14 @@ def main():
             location = clean_str(c.get("location"))
             details = c.get("details") if isinstance(c.get("details"), dict) else {}
             contact_types = c.get("contact_types") or []
+
+            # Promote details.Tags into contact_types for unified tags
+            # Legacy Tags format: "family-office", "multi-family-office", "company-sold", etc.
+            # Can be comma-separated: "family-office, multi-family-office"
+            raw_tags = details.get("Tags", "") if isinstance(details, dict) else ""
+            if raw_tags:
+                extra_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+                contact_types = list(set(contact_types + extra_tags))
             user_id = c.get("user_id")
             bounced = c.get("globally_bounced") or False
             unsub = c.get("globally_unsubscribed") or False
@@ -322,7 +347,7 @@ def main():
             if bounced:
                 email_status = "bounced"
             if unsub:
-                email_status = "suppressed"
+                email_status = "unsubscribed"
                 if supp_reason:
                     email_metadata["suppression_reason"] = supp_reason
                 if supp_date:
@@ -364,6 +389,49 @@ def main():
             if phone and phone not in phones_to_upsert:
                 phones_to_upsert[phone] = {"number": phone, "status": "active"}
 
+            # ── Collect LinkedIn entity ──────────────────────────
+            linkedin_url = normalize_linkedin(details.get("linkedin_URL")) if isinstance(details, dict) else None
+            if linkedin_url and linkedin_url not in linkedins_to_upsert and linkedin_url not in linkedin_id_map:
+                linkedins_to_upsert[linkedin_url] = {"url": linkedin_url}
+
+            # ── Classify details keys ────────────────────────────
+            # Keys promoted to proper columns / separate entities (never stored in JSONB)
+            PROMOTED_KEYS = {"lead_status", "email_status", "Tags", "linkedin_URL"}
+
+            # Keys that describe the PERSON (stay on people.details)
+            PERSON_KEYS = {
+                "engagement_type", "last_webinar_attended",
+                "order_id", "order_date", "event_name", "ticket_type",
+                "registration_time", "event_start_date", "event_start_time",
+                "event_timezone", "event_id",
+                "ticket_price", "ticket_quantity",
+                "buyer_email", "buyer_first_name", "buyer_last_name",
+                "purchaser_city", "purchaser_state", "purchaser_country",
+                "currency", "approval_status",
+            }
+
+            # Everything else from details is COMPANY info → org details
+            # (focus, firm description, website, specialization, sector, etc.)
+
+            # ── Build people details (person-specific) ───────────
+            people_details: dict = {}
+            if location:
+                people_details["location"] = location
+            if source:
+                people_details["import_source"] = source
+            for key, value in details.items():
+                if key in PROMOTED_KEYS:
+                    continue
+                if key in PERSON_KEYS:
+                    people_details[key] = value
+
+            # ── Build org details (company-specific) ─────────────
+            org_details: dict = {}
+            for key, value in details.items():
+                if key in PROMOTED_KEYS or key in PERSON_KEYS:
+                    continue
+                org_details[key] = value
+
             # ── Collect org entity ───────────────────────────────
             if company:
                 company_lower = company.lower().strip()
@@ -371,21 +439,12 @@ def main():
                     orgs_to_upsert[company_lower] = {
                         "name": company,   # preserve original casing
                         "org_type": org_type,
+                        "details": org_details if org_details else {},
                     }
-
-            # ── Build people details ─────────────────────────────
-            # Selective migration of details JSONB
-            people_details: dict = {}
-            if location:
-                people_details["location"] = location
-            if source:
-                people_details["import_source"] = source
-            # Carry over useful details fields
-            for key in ("engagement_type", "last_webinar_attended",
-                        "order_id", "order_date", "event_name", "ticket_type",
-                        "raw", "lead_status"):
-                if key in details and key != "lead_status":
-                    people_details[key] = details[key]
+                elif company_lower in orgs_to_upsert and org_details:
+                    # Merge org details if we already have this org queued
+                    existing_org_details = orgs_to_upsert[company_lower].get("details", {})
+                    orgs_to_upsert[company_lower]["details"] = {**existing_org_details, **org_details}
 
             parsed_contacts.append({
                 "contact_id": c["id"],
@@ -401,6 +460,7 @@ def main():
                 "user_id": user_id,
                 "lead_status": lead_status,
                 "details": people_details,
+                "linkedin_url": linkedin_url,
                 "created_at": created_at,
                 "updated_at": updated_at,
             })
@@ -416,6 +476,7 @@ def main():
     console.print(f"  Emails: {len(new_emails):,} new, {len(existing_email_contacts):,} existing")
     console.print(f"  Phones: {len(new_phones):,} new, {len(phones_to_upsert) - len(new_phones):,} existing")
     console.print(f"  Organizations: {len(orgs_to_upsert):,} new")
+    console.print(f"  LinkedIn profiles: {len(linkedins_to_upsert):,} new")
 
     if args.dry_run:
         console.print("\n[yellow]DRY RUN — no writes performed.[/yellow]")
@@ -441,20 +502,28 @@ def main():
             upsert_batch(supabase, "emails", email_rows, on_conflict="address",
                          progress_task=t, progress=progress)
 
-        # Also update status on existing emails if they're now bounced/suppressed
-        status_updates = []
+        # Update existing emails: status changes (bounced/unsubscribed)
+        # AND/OR verification metadata (email_status → verification_status)
+        email_updates = []
         for addr, rec in existing_email_contacts.items():
-            if rec["status"] != "active":
-                status_updates.append({
-                    "address": addr,
-                    "status": rec["status"],
-                    "metadata": rec.get("metadata", {}),
-                })
-        if status_updates:
-            t = progress.add_task("Updating email statuses...", total=len(status_updates))
-            upsert_batch(supabase, "emails", status_updates, on_conflict="address",
+            has_status_change = rec["status"] != "active"
+            has_verification = bool(rec.get("metadata", {}).get("verification_status"))
+
+            if has_status_change or has_verification:
+                update = {"address": addr}
+                if has_status_change:
+                    update["status"] = rec["status"]
+                update["metadata"] = rec.get("metadata", {})
+                email_updates.append(update)
+
+        if email_updates:
+            t = progress.add_task("Updating existing emails...", total=len(email_updates))
+            upsert_batch(supabase, "emails", email_updates, on_conflict="address",
                          progress_task=t, progress=progress)
-            console.print(f"  Updated {len(status_updates):,} email statuses (bounced/suppressed)")
+            status_count = sum(1 for u in email_updates if "status" in u)
+            meta_only = len(email_updates) - status_count
+            console.print(f"  Updated {len(email_updates):,} existing emails "
+                          f"({status_count:,} status changes, {meta_only:,} metadata-only)")
 
         # ── Phones ────────────────────────────────────────────
         if new_phones:
@@ -470,6 +539,13 @@ def main():
             upsert_batch(supabase, "organizations", org_rows, on_conflict="name",
                          progress_task=t, progress=progress)
 
+        # ── LinkedIn Profiles ─────────────────────────────────
+        if linkedins_to_upsert:
+            t = progress.add_task("Upserting linkedin profiles...", total=len(linkedins_to_upsert))
+            li_rows = list(linkedins_to_upsert.values())
+            upsert_batch(supabase, "linkedin_profiles", li_rows, on_conflict="url",
+                         progress_task=t, progress=progress)
+
     # ── Refresh ID maps after upserts ────────────────────────────────────
     console.print("  Refreshing ID maps...")
     all_emails_now = fetch_all(supabase, "emails", "id,address")
@@ -481,7 +557,11 @@ def main():
     all_orgs_now = fetch_all(supabase, "organizations", "id,name")
     org_id_map = {o["name"].lower().strip(): o["id"] for o in all_orgs_now if o.get("name")}
 
-    console.print(f"  → emails: {len(email_id_map):,}  phones: {len(phone_id_map):,}  orgs: {len(org_id_map):,}")
+    all_li_now = fetch_all(supabase, "linkedin_profiles", "id,url")
+    linkedin_id_map = {li["url"]: li["id"] for li in all_li_now if li.get("url")}
+
+    console.print(f"  → emails: {len(email_id_map):,}  phones: {len(phone_id_map):,}  "
+                  f"orgs: {len(org_id_map):,}  linkedin: {len(linkedin_id_map):,}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 4: Resolve people (match existing or prepare new)
@@ -498,6 +578,7 @@ def main():
     junction_pe: list[dict] = []   # person_emails
     junction_pp: list[dict] = []   # person_phones
     junction_po: list[dict] = []   # person_organizations
+    junction_pl: list[dict] = []   # person_linkedin
 
     with Progress(
         SpinnerColumn(), TextColumn("[bold blue]Resolving people...[/bold blue]"),
@@ -574,6 +655,18 @@ def main():
                     })
                     existing_po_set.add((existing_person_id, org_id))
 
+                # Add LinkedIn junction if missing
+                li_url = pc.get("linkedin_url")
+                if li_url:
+                    li_id = linkedin_id_map.get(li_url)
+                    if li_id and (existing_person_id, li_id) not in existing_pl_set:
+                        junction_pl.append({
+                            "person_id": existing_person_id,
+                            "linkedin_id": li_id,
+                            "source": "contacts_import",
+                        })
+                        existing_pl_set.add((existing_person_id, li_id))
+
             else:
                 # CREATE new person
                 person_record = {
@@ -596,6 +689,7 @@ def main():
                 person_record["_email_id"] = email_id
                 person_record["_phone_id"] = phone_id
                 person_record["_org_id"] = org_id
+                person_record["_linkedin_url"] = pc.get("linkedin_url")
                 person_record["_role"] = pc["role"]
                 person_record["_source"] = pc["source"]
                 person_record["_contact_id"] = pc["contact_id"]
@@ -698,6 +792,17 @@ def main():
         # Map contact_id → person_id
         contact_id_to_existing[contact_id] = person_id
 
+        # person ↔ linkedin
+        li_url = pr.get("_linkedin_url")
+        if li_url:
+            li_id = linkedin_id_map.get(li_url)
+            if li_id:
+                junction_pl.append({
+                    "person_id": person_id,
+                    "linkedin_id": li_id,
+                    "source": "contacts_import",
+                })
+
     with Progress(
         SpinnerColumn(), TextColumn("[bold blue]Upserting junctions...[/bold blue]"),
         BarColumn(), MofNCompleteColumn(), console=console,
@@ -720,6 +825,12 @@ def main():
             upsert_batch(supabase, "person_organizations", junction_po,
                          on_conflict="person_id,organization_id", progress_task=t, progress=progress)
             console.print(f"  person_organizations: {len(junction_po):,} rows")
+
+        if junction_pl:
+            t = progress.add_task("person_linkedin...", total=len(junction_pl))
+            upsert_batch(supabase, "person_linkedin", junction_pl,
+                         on_conflict="person_id,linkedin_id", progress_task=t, progress=progress)
+            console.print(f"  person_linkedin: {len(junction_pl):,} rows")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 8: Save contacts.id → people.id mapping
@@ -755,7 +866,7 @@ def main():
     t.add_column("Records", justify="right", style="green")
     t.add_column("Notes", style="dim")
     t.add_row("emails (new)", f"{len(new_emails):,}", "upserted on address")
-    t.add_row("emails (status updated)", f"{len(status_updates):,}" if status_updates else "0", "bounced/suppressed")
+    t.add_row("emails (existing updated)", f"{len(email_updates):,}" if email_updates else "0", "status + verification metadata")
     t.add_row("phones (new)", f"{len(new_phones):,}", "upserted on number")
     t.add_row("organizations (new)", f"{len(orgs_to_upsert):,}", "upserted on name")
     t.add_row("people (created)", f"{len(new_person_ids):,}", "new people from contacts")
