@@ -858,6 +858,293 @@ def main():
     console.print(f"  Mappings with user_id: {user_id_count:,} (for production backfill)")
 
     # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 9: Backfill campaign_recipients.recipient_person_id
+    # ══════════════════════════════════════════════════════════════════════════
+
+    console.print("\n[bold magenta]Phase 9: Backfilling campaign_recipients[/bold magenta]")
+
+    # Fetch all campaign_recipients that need linking
+    # We only look for those that have a contact_id and recipient_person_id is still NULL
+    all_cr = fetch_all(supabase, "campaign_recipients", "id,contact_id,recipient_person_id,campaign_id")
+    to_link = []
+    for cr in all_cr:
+        cid = cr.get("contact_id")
+        if cid and cid in contact_id_to_existing and not cr.get("recipient_person_id"):
+            to_link.append({
+                "id": cr["id"],
+                "contact_id": cid,
+                "campaign_id": cr["campaign_id"],
+                "recipient_person_id": contact_id_to_existing[cid]
+            })
+
+    if to_link:
+        console.print(f"  Campaign recipients to link: {len(to_link):,} / {len(all_cr):,}")
+        with Progress(
+            SpinnerColumn(), TextColumn("[bold blue]Linking recipients...[/bold blue]"),
+            BarColumn(), MofNCompleteColumn(), console=console,
+        ) as progress:
+            task = progress.add_task("linking", total=len(to_link))
+            # Batch update is not natively supported for different values per row in a single query
+            # So we use upsert which handles identity-based updates if IDs are provided
+            upsert_batch(supabase, "campaign_recipients", to_link, on_conflict="id",
+                         progress_task=task, progress=progress)
+    else:
+        console.print("  No campaign recipients to link (already linked or no matches).")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 10: Backfill Activities (Calls & Campaign Timeline)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    console.print("\n[bold magenta]Phase 10: Backfilling Activities Timeline[/bold magenta]")
+
+    backfill_activities = []
+
+    # ── Shared lookups for Phase 10 & 11 ─────────────────────────────────────
+    console.print("  [dim]Loading lookup data...[/dim]")
+    prospects = fetch_all(supabase, "prospects", "id,property_name,address,call_status")
+    prospect_map = {p["id"]: p for p in prospects}
+
+    properties = fetch_all(supabase, "properties", "id,property_name,address")
+    property_lookup = {(p["property_name"], p["address"]): p["id"] for p in properties if p["property_name"] and p["address"]}
+
+    person_props = fetch_all(supabase, "person_properties", "person_id,property_id")
+    prop_to_people = {}
+    for pp in person_props:
+        pid = pp["property_id"]
+        if pid not in prop_to_people: prop_to_people[pid] = []
+        prop_to_people[pid].append(pp["person_id"])
+
+    # Fetch prospect_phones for contact_name matching
+    all_prospect_phones = fetch_all(supabase, "prospect_phones",
+                                    "id,prospect_id,contact_name,contact_email,phone_number")
+    prospect_phone_map = {pp["id"]: pp for pp in all_prospect_phones}
+
+    # Fetch people for name matching
+    all_people_now = fetch_all(supabase, "people", "id,first_name,last_name")
+    people_by_id = {p["id"]: p for p in all_people_now}
+
+    # ── Idempotency: fetch existing activities to skip duplicates ────────────
+    console.print("  [dim]Checking existing activities for idempotency...[/dim]")
+    existing_activities = fetch_all(supabase, "activities", "id,person_id,type,metadata")
+
+    existing_call_keys: set[tuple] = set()
+    for act in existing_activities:
+        if act["type"] == "call_logged":
+            legacy_id = (act.get("metadata") or {}).get("legacy_prospect_call_id")
+            if legacy_id:
+                existing_call_keys.add((act["person_id"], legacy_id))
+
+    existing_campaign_keys: set[tuple] = set()
+    for act in existing_activities:
+        if act["type"] in ("email_reply", "email_bounce", "email_unsubscribe"):
+            meta = act.get("metadata") or {}
+            if meta.get("campaign_id"):
+                existing_campaign_keys.add((act["person_id"], act["type"], meta["campaign_id"]))
+
+    # ── 1. Prospect Calls → Activities ───────────────────────────────────────
+    # Use prospect_phone_id → prospect_phones.contact_name to identify the
+    # specific person who was called, instead of fanning out to ALL people
+    # on the property.
+    console.print("  [dim]Collecting prospect calls...[/dim]")
+
+    calls = fetch_all(supabase, "prospect_calls")
+    calls_matched = 0
+    calls_skipped_no_phone = 0
+    calls_skipped_no_name_match = 0
+    calls_skipped_duplicate = 0
+
+    for call in calls:
+        prospect_phone_id = call.get("prospect_phone_id")
+
+        # Must have a prospect_phone_id to identify who was called
+        if not prospect_phone_id:
+            calls_skipped_no_phone += 1
+            continue
+
+        prospect_phone = prospect_phone_map.get(prospect_phone_id)
+        if not prospect_phone:
+            calls_skipped_no_phone += 1
+            continue
+
+        contact_name = (prospect_phone.get("contact_name") or "").lower().strip()
+        if not contact_name:
+            calls_skipped_no_phone += 1
+            continue
+
+        # Find the property for this prospect
+        prospect = prospect_map.get(call["prospect_id"])
+        if not prospect:
+            calls_skipped_no_phone += 1
+            continue
+
+        prop_id = property_lookup.get((prospect["property_name"], prospect["address"]))
+        if not prop_id:
+            calls_skipped_no_phone += 1
+            continue
+
+        # Get people on this property and name-match to the contact_name
+        people_ids = prop_to_people.get(prop_id, [])
+        matched_person_id = None
+
+        # Try exact full-name match first
+        for pid in people_ids:
+            person = people_by_id.get(pid)
+            if not person:
+                continue
+            full_name = f"{person.get('first_name', '')} {person.get('last_name', '')}".lower().strip()
+            if full_name == contact_name:
+                matched_person_id = pid
+                break
+
+        # Fallback: first-name-only match
+        if not matched_person_id:
+            contact_first = contact_name.split()[0] if contact_name else ""
+            if contact_first:
+                for pid in people_ids:
+                    person = people_by_id.get(pid)
+                    if not person:
+                        continue
+                    if (person.get("first_name") or "").lower().strip() == contact_first:
+                        matched_person_id = pid
+                        break
+
+        if not matched_person_id:
+            calls_skipped_no_name_match += 1
+            continue
+
+        # Check for duplicate (idempotency)
+        if (matched_person_id, call["id"]) in existing_call_keys:
+            calls_skipped_duplicate += 1
+            continue
+
+        backfill_activities.append({
+            "person_id": matched_person_id,
+            "type": "call_logged",
+            "channel": "phone",
+            "description": f"Outcome: {call['outcome']}",
+            "timestamp": call["called_at"],
+            "metadata": {
+                "caller_name": call.get("caller_name"),
+                "phone_used": call.get("phone_used"),
+                "legacy_prospect_call_id": call["id"],
+                "legacy_prospect_phone_id": prospect_phone_id,
+                "source": "prospect_calls_backfill"
+            }
+        })
+        calls_matched += 1
+
+    console.print(f"  Calls → activities matched: {calls_matched:,}")
+    console.print(f"  Calls skipped (no prospect_phone/contact_name): {calls_skipped_no_phone:,}")
+    console.print(f"  Calls skipped (no name match on property): {calls_skipped_no_name_match:,}")
+    console.print(f"  Calls skipped (already backfilled): {calls_skipped_duplicate:,}")
+
+    # ── 2. Campaign Timeline → Activities ────────────────────────────────────
+    # Use already linked recipients from Phase 9
+    console.print("  [dim]Collecting campaign timeline...[/dim]")
+    campaigns = fetch_all(supabase, "campaigns", "id,name")
+    camp_map = {c["id"]: c["name"] for c in campaigns}
+
+    linked_recipients = fetch_all(supabase, "campaign_recipients",
+                                  "recipient_person_id,campaign_id,sent_at,replied_at,bounced_at,unsubscribed_at")
+
+    campaign_added = 0
+    campaign_skipped_duplicate = 0
+    for r in linked_recipients:
+        pid = r.get("recipient_person_id")
+        if not pid: continue
+        c_name = camp_map.get(r["campaign_id"], "Unknown Campaign")
+
+        for field, act_type in [("replied_at", "email_reply"),
+                                ("bounced_at", "email_bounce"),
+                                ("unsubscribed_at", "email_unsubscribe")]:
+            if r.get(field):
+                if (pid, act_type, r["campaign_id"]) in existing_campaign_keys:
+                    campaign_skipped_duplicate += 1
+                    continue
+
+                backfill_activities.append({
+                    "person_id": pid,
+                    "type": act_type,
+                    "channel": "email",
+                    "description": f"{act_type.replace('_', ' ').title()}: {c_name}",
+                    "timestamp": r[field],
+                    "metadata": {"campaign_id": r["campaign_id"], "source": "campaign_backfill"}
+                })
+                campaign_added += 1
+
+    console.print(f"  Campaign activities added: {campaign_added:,}")
+    console.print(f"  Campaign activities skipped (already backfilled): {campaign_skipped_duplicate:,}")
+
+    if backfill_activities:
+        console.print(f"  Inserting {len(backfill_activities):,} activity records...")
+        insert_batch(supabase, "activities", backfill_activities,
+                     progress=None)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE 11: Sync Phone Status & DNC
+    # ══════════════════════════════════════════════════════════════════════════
+
+    console.print("\n[bold magenta]Phase 11: Syncing Phone Status & DNC Flags[/bold magenta]")
+    
+    # 1. Phone Status
+    prospect_phones = fetch_all(supabase, "prospect_phones")
+    phone_updates = []
+    
+    all_phones_now = fetch_all(supabase, "phones", "id,number")
+    phone_id_map_local = {p["number"]: p["id"] for p in all_phones_now if p.get("number")}
+
+    for pp in prospect_phones:
+        if pp["call_status"] == "new" and not pp["follow_up_at"]: continue
+        prospect = prospect_map.get(pp["prospect_id"])
+        if not prospect: continue
+        prop_id = property_lookup.get((prospect["property_name"], prospect["address"]))
+        if not prop_id: continue
+        
+        norm_num = normalize_phone(pp["phone_number"])
+        phi_id = phone_id_map_local.get(norm_num)
+        if not phi_id: continue
+        
+        people_ids = prop_to_people.get(prop_id, [])
+        for person_id in people_ids:
+            phone_updates.append({
+                "person_id": person_id,
+                "phone_id": phi_id,
+                "call_status": pp["call_status"],
+                "call_count": pp.get("call_count", 0),
+                "last_called_at": pp.get("last_called_at"),
+                "last_called_by": pp.get("last_called_by"),
+                "follow_up_at": pp.get("follow_up_at")
+            })
+            
+    if phone_updates:
+        # Deduplicate to avoid "ON CONFLICT DO UPDATE command cannot affect row a second time"
+        final_updates = {}
+        for up in phone_updates:
+            key = (up["person_id"], up["phone_id"])
+            final_updates[key] = up
+        phone_updates = list(final_updates.values())
+        
+        console.print(f"  Syncing {len(phone_updates):,} phone statuses...")
+        upsert_batch(supabase, "person_phones", phone_updates, on_conflict="person_id,phone_id")
+
+    # 2. DNC Flags
+    dnc_pids = []
+    for p in prospects:
+        if p["call_status"] == "do_not_call":
+            prop_id = property_lookup.get((p["property_name"], p["address"]))
+            if prop_id:
+                people_ids = prop_to_people.get(prop_id, [])
+                dnc_pids.extend(people_ids)
+    
+    if dnc_pids:
+        dnc_pids = list(set(dnc_pids))
+        console.print(f"  Marking {len(dnc_pids):,} people as 'do_not_contact'...")
+        # Update in batches
+        for i in range(0, len(dnc_pids), 100):
+            batch = dnc_pids[i:i+100]
+            supabase.table("people").update({"lead_status": "do_not_contact"}).in_("id", batch).execute()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Summary
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -874,6 +1161,10 @@ def main():
     t.add_row("person_emails", f"{len(junction_pe):,}", "")
     t.add_row("person_phones", f"{len(junction_pp):,}", "")
     t.add_row("person_organizations", f"{len(junction_po):,}", "")
+    t.add_row("person_linkedin", f"{len(junction_pl):,}", "")
+    t.add_row("campaign_recipients linked", f"{len(to_link):,}", "set recipient_person_id")
+    t.add_row("activities (backfilled)", f"{len(backfill_activities):,}", "calls + campaign milestones")
+    t.add_row("phone status synced", f"{len(phone_updates):,}", "prospect_phones -> person_phones")
     t.add_row("contact→person mapping", f"{len(contact_id_to_existing):,}", mapping_path)
     console.print(t)
 
