@@ -1025,6 +1025,7 @@ def main():
             "metadata": {
                 "caller_name": call.get("caller_name"),
                 "phone_used": call.get("phone_used"),
+                "outcome": call.get("outcome"),
                 "legacy_prospect_call_id": call["id"],
                 "legacy_prospect_phone_id": prospect_phone_id,
                 "source": "prospect_calls_backfill"
@@ -1085,7 +1086,28 @@ def main():
 
     console.print("\n[bold magenta]Phase 11: Syncing Phone Status & DNC Flags[/bold magenta]")
     
-    # 1. Phone Status
+    # 1. Derive latest call outcome per prospect_phone from prospect_calls (so backfilled
+    #    history sets call_status instead of leaving it unknown)
+    console.print("  [dim]Deriving latest call outcome per prospect phone from prospect_calls...[/dim]")
+    all_calls = fetch_all(supabase, "prospect_calls", "prospect_phone_id,outcome,called_at,caller_name")
+    # prospect_phone_id can be null for old rows; keep only rows with it
+    calls_with_phone = [c for c in all_calls if c.get("prospect_phone_id")]
+    # Sort by called_at desc so first occurrence per prospect_phone_id is the latest
+    calls_with_phone.sort(key=lambda c: (c.get("prospect_phone_id") or "", c.get("called_at") or ""), reverse=True)
+    latest_call_by_pp_id: dict = {}
+    call_count_by_pp_id: dict = {}
+    for c in calls_with_phone:
+        pp_id = c["prospect_phone_id"]
+        if pp_id not in latest_call_by_pp_id:
+            latest_call_by_pp_id[pp_id] = {
+                "outcome": c.get("outcome"),
+                "called_at": c.get("called_at"),
+                "caller_name": c.get("caller_name"),
+            }
+        call_count_by_pp_id[pp_id] = call_count_by_pp_id.get(pp_id, 0) + 1
+    console.print(f"  Prospect phones with at least one call: {len(latest_call_by_pp_id):,}")
+
+    # 2. Phone Status: sync prospect_phones -> person_phones, using derived status when available
     prospect_phones = fetch_all(supabase, "prospect_phones")
     phone_updates = []
     
@@ -1093,7 +1115,11 @@ def main():
     phone_id_map_local = {p["number"]: p["id"] for p in all_phones_now if p.get("number")}
 
     for pp in prospect_phones:
-        if pp["call_status"] == "new" and not pp["follow_up_at"]: continue
+        latest = latest_call_by_pp_id.get(pp["id"])
+        has_derived_status = latest is not None
+        # Include this phone if we have a status to sync: either from prospect_phones or from derived call history
+        if not has_derived_status and pp["call_status"] == "new" and not pp["follow_up_at"]:
+            continue
         prospect = prospect_map.get(pp["prospect_id"])
         if not prospect: continue
         prop_id = property_lookup.get((prospect["property_name"], prospect["address"]))
@@ -1103,15 +1129,27 @@ def main():
         phi_id = phone_id_map_local.get(norm_num)
         if not phi_id: continue
         
+        # Use latest call outcome when we have call history; otherwise use prospect_phones columns
+        if has_derived_status:
+            call_status = latest.get("outcome") or pp.get("call_status")
+            last_called_at = latest.get("called_at") or pp.get("last_called_at")
+            last_called_by = latest.get("caller_name") or pp.get("last_called_by")
+            call_count = call_count_by_pp_id.get(pp["id"], 0) or pp.get("call_count", 0)
+        else:
+            call_status = pp.get("call_status")
+            last_called_at = pp.get("last_called_at")
+            last_called_by = pp.get("last_called_by")
+            call_count = pp.get("call_count", 0)
+        
         people_ids = prop_to_people.get(prop_id, [])
         for person_id in people_ids:
             phone_updates.append({
                 "person_id": person_id,
                 "phone_id": phi_id,
-                "call_status": pp["call_status"],
-                "call_count": pp.get("call_count", 0),
-                "last_called_at": pp.get("last_called_at"),
-                "last_called_by": pp.get("last_called_by"),
+                "call_status": call_status,
+                "call_count": call_count,
+                "last_called_at": last_called_at,
+                "last_called_by": last_called_by,
                 "follow_up_at": pp.get("follow_up_at")
             })
             
