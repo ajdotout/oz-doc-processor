@@ -330,6 +330,11 @@ def main():
             if raw_tags:
                 extra_tags = [t.strip().replace('-', '_') for t in raw_tags.split(",") if t.strip()]
                 contact_types = list(set(contact_types + extra_tags))
+            # When contact has a source (e.g. website signup), add matching tag so filter/UI stay consistent
+            if source:
+                source_tag = source.lower().replace(" ", "_").strip()
+                if source_tag and source_tag not in contact_types:
+                    contact_types = list(set(contact_types + [source_tag]))
             user_id = c.get("user_id")
             bounced = c.get("globally_bounced") or False
             unsub = c.get("globally_unsubscribed") or False
