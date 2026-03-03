@@ -322,14 +322,13 @@ def main():
             source = clean_str(c.get("source"))
             location = clean_str(c.get("location"))
             details = c.get("details") if isinstance(c.get("details"), dict) else {}
-            contact_types = c.get("contact_types") or []
+            # Normalize hyphens to underscores for unified tag format
+            contact_types = [t.strip().replace('-', '_') for t in (c.get("contact_types") or []) if t.strip()]
 
             # Promote details.Tags into contact_types for unified tags
-            # Legacy Tags format: "family-office", "multi-family-office", "company-sold", etc.
-            # Can be comma-separated: "family-office, multi-family-office"
             raw_tags = details.get("Tags", "") if isinstance(details, dict) else ""
             if raw_tags:
-                extra_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+                extra_tags = [t.strip().replace('-', '_') for t in raw_tags.split(",") if t.strip()]
                 contact_types = list(set(contact_types + extra_tags))
             user_id = c.get("user_id")
             bounced = c.get("globally_bounced") or False
