@@ -1,0 +1,258 @@
+# Wave 3 Final Architecture — Tab-Aligned Classification
+
+## The Principle
+
+Classify documents based on **where they'll be consumed** — the tabs/pages in the frontend. This gives us a small, stable set of categories and a clean routing matrix.
+
+### Frontend Tabs (for any given listing, 4 of these 6 are active)
+
+| Tab | Agent | Always Present? |
+|---|---|---|
+| **Overview** (homepage) | OverviewAgent | ✅ Always |
+| **Financial Returns** | FinancialAgent | Swappable with → |
+| **How Investors Participate** | FinancialAgent | ← Swappable |
+| **Property Overview** | PropertyAgent | Swappable with → |
+| **Portfolio Projects** | PropertyAgent | ← Swappable |
+| **Market Analysis** | MarketAgent | ✅ Always |
+| **Sponsor Profile** | SponsorAgent | ✅ Always |
+
+---
+
+## 4 Document Categories
+
+| Category | What Goes Here | Examples from Real Listings |
+|---|---|---|
+| **[om](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/src/prompts/market.py#91-98)** | The main narrative document(s) about this deal. OM, investor pitchdecks, sponsor decks, loan packages. If a document talks about the deal AND the sponsor, it's an OM. | `EMERALD PARK OFFERING MEMORANDUM V6.pdf`, `Celadon Opp Zone Deck.pdf`, `TierraMark_Investor_Deck.pdf`, `Havyn_+_TierraMark_Deck.pdf`, `491B OM v01g2-x.pdf`, `Northmarq Hoque Loan Request Package.pdf`, `LakewireOMSSDAboutus.pdf`, `SKY-EVERETT-THE BOOK.pdf` |
+| **`proforma`** | Financial models and projections. Spreadsheets with numbers, tabs, scenarios. | `2274 Shattuck Proforma_02.10.26.xlsx`, `SKY Everett - Model - 5 over 2.xlsx`, `Lake Wire ver5-HUD.xlsx`, `2025-07-30_TierraMark_176u.xlsx` |
+| **`research`** | Anything providing context about the site, market, or physical environment. Area summaries, market surveys, rent comps, feasibility studies, zoning/site plans, architectural drawings, environmental reports. | `2025 1121 area summary 5-2.pdf`, `Market Survey (2274 Shattuck).xlsx`, `Camp_Verde_Feasibilty.pdf`, `0126000223_-_Draft_Report.pdf`, `2201 - 2023.11.10 - Zoning Resubmittal.pdf`, `06-25-2025_Landmark_Apts_EXT_ELEVS.pdf`, `06-25-2025_Landmark_Apts_SP_-_TRC_Meeting.pdf` |
+| **`supplemental`** | Emails, notes, misc markdown. Always goes everywhere. | `EmailInfo.md`, `FIELD_TO_DOC_SUMMARY.md` |
+
+**Why this works:**
+- **Sponsor deck → [om](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/src/prompts/market.py#91-98)**: A sponsor deck contains the deal narrative + sponsor info. It's needed on Overview and Sponsor pages — same routing as an OM. No need for a separate category.
+- **Area summary + market survey + architectural + feasibility → `research`**: All of these provide context beyond the core deal narrative. They're useful for Property (site details, location) and Market (demographics, comps, market data) pages.
+- **Supplemental stays supplemental**: [.md](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/.agent/skills/listing-verify/SKILL.md) files are always misc context that every agent can benefit from.
+
+---
+
+## Routing Matrix
+
+| Category | Overview | Financial | Property | Market | Sponsor |
+|---|---|---|---|---|---|
+| [om](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/src/prompts/market.py#91-98) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `proforma` | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `research` | ❌ | ❌ | ✅ | ✅ | ❌ |
+| `supplemental` | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+**Reading the matrix:**
+- **OverviewAgent** sees: OMs + supplemental. Clean — just the narrative.
+- **FinancialAgent** sees: OMs + pro formas + supplemental. Gets the numbers it needs.
+- **PropertyAgent** sees: OMs + research + supplemental. Gets site plans, area context, location detail.
+- **MarketAgent** sees: OMs + research + supplemental. Gets market surveys, area summaries, feasibility data.
+- **SponsorAgent** sees: OMs + supplemental. Sponsor info lives in the OM/deck.
+
+---
+
+## Classifier Agent
+
+### Prompt
+
+```python
+CLASSIFIER_SYSTEM_PROMPT = """
+You are a document classifier for real estate investment documents.
+
+Given the filename and a preview of a document's content, classify it into EXACTLY ONE category:
+
+- **om**: The main deal document. Offering Memorandums, investor pitch decks, sponsor decks, loan request packages. If the document describes a specific investment opportunity (deal terms, returns, property description, sponsor background), it's an OM. When in doubt, choose this.
+- **proforma**: Financial model or projections spreadsheet. Mostly numerical tables — cash flows, unit economics, construction budgets, HUD worksheets, sensitivity analyses. Very little narrative text.
+- **research**: Context documents about the site or market. Area demographic summaries, market surveys, rent comp tables, feasibility studies, appraisals, architectural/site plans, zoning submittals, elevation drawings, environmental reports.
+- **supplemental**: Miscellaneous notes, emails, cover letters, or anything that doesn't fit the above.
+
+Rules:
+1. If a document contains BOTH deal narrative AND sponsor info, classify as **om** (most OM decks include sponsor sections).
+2. If a document is primarily financial tables with minimal narrative, classify as **proforma**.
+3. If a document is about the broader market/area/site (not a specific deal), classify as **research**.
+4. When in doubt, classify as **om** — it's the safest default since all agents receive om content.
+"""
+```
+
+### Schema
+
+```python
+class DocumentClassification(BaseModel):
+    category: Literal["om", "proforma", "research", "supplemental"]
+    reasoning: str = Field(..., description="One sentence explaining why")
+```
+
+Dropped the `confidence` field — 4 categories is simple enough that confidence is unnecessary. Dropped the escape hatch override — not needed with clean categories.
+
+### Config (`.env`)
+
+```env
+# Classification
+CLASSIFIER_MODEL=gemini-2.0-flash-lite
+CLASSIFIER_LINES=100
+
+# Extraction
+EXTRACTION_MODEL=gemini-3-flash-preview
+```
+
+---
+
+## Integration
+
+### [process_listing.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/process_listing.py) Changes
+
+After all files are OCR'd/converted to markdown, before consolidation:
+
+```python
+async def process_listing(listing_name: str):
+    # ... existing file processing (produces per-file markdowns in temp/) ...
+    
+    # NEW: Classify each file
+    per_file_markdowns = {}
+    for doc_path in process_files:
+        if doc_path.suffix.lower() in [".pdf", ".xlsx", ".xls"]:
+            temp_md = temp_dir / f"{doc_path.stem}.md"
+            per_file_markdowns[doc_path.name] = temp_md.read_text()
+        elif doc_path.suffix.lower() == ".md":
+            per_file_markdowns[doc_path.name] = doc_path.read_text()
+    
+    classifications = await classify_documents(per_file_markdowns)
+    
+    # Save manifest alongside the consolidated markdown
+    manifest = {
+        "listing": listing_name,
+        "classified_with": CLASSIFIER_MODEL,
+        "files": [
+            {
+                "filename": fname,
+                "category": cls.category,
+                "reasoning": cls.reasoning,
+                "char_count": len(per_file_markdowns.get(fname, ""))
+            }
+            for fname, cls in classifications.items()
+        ]
+    }
+    manifest_path = listing_dir / "doc_manifest.json"
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+    
+    logging.info(f"📋 Document classification:")
+    for f in manifest["files"]:
+        logging.info(f"   {f['category']:>12}  {f['filename']}  — {f['reasoning']}")
+    
+    # ... existing consolidation code (unchanged, for backward compat) ...
+```
+
+### [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py) Changes
+
+```python
+AGENT_ROUTING = {
+    "overview":  {"om", "supplemental"},
+    "financial": {"om", "proforma", "supplemental"},
+    "property":  {"om", "research", "supplemental"},
+    "market":    {"om", "research", "supplemental"},
+    "sponsor":   {"om", "supplemental"},
+}
+
+async def run_pipeline(markdown_path: str, agent_filter: str = None):
+    listing_dir = Path(markdown_path).parent
+    manifest_path = listing_dir / "doc_manifest.json"
+    
+    if manifest_path.exists():
+        # ── Routed mode ──
+        manifest = json.loads(manifest_path.read_text())
+        
+        per_file_markdowns = {}
+        for file_info in manifest["files"]:
+            fname = file_info["filename"]
+            stem = Path(fname).stem
+            ext = Path(fname).suffix.lower()
+            
+            if ext == ".md":
+                md_path = listing_dir / fname
+            else:
+                md_path = listing_dir / "temp" / f"{stem}.md"
+            
+            if md_path.exists():
+                per_file_markdowns[fname] = md_path.read_text()
+        
+        classifications = {
+            f["filename"]: f["category"]
+            for f in manifest["files"]
+        }
+        
+        # Build per-agent content
+        def build_content(agent_name):
+            allowed = AGENT_ROUTING[agent_name]
+            sections = []
+            for fname, content in per_file_markdowns.items():
+                if classifications.get(fname) in allowed:
+                    header = f"\n{'='*40}\nSOURCE FILE: {fname}\n{'='*40}\n\n"
+                    sections.append(header + content)
+            return "\n".join(sections)
+        
+        agent_contents = {name: build_content(name) for name in AGENT_ROUTING}
+    else:
+        # ── Legacy mode (no manifest) ──
+        full_content = Path(markdown_path).read_text()
+        agent_contents = {name: full_content for name in AGENT_ROUTING}
+    
+    # Determine which agents to run
+    all_agents = {
+        "overview": OverviewAgent,
+        "financial": FinancialAgent,
+        "property": PropertyAgent,
+        "market": MarketAgent,
+        "sponsor": SponsorAgent,
+    }
+    
+    if agent_filter:
+        if agent_filter not in all_agents:
+            logging.error(f"Unknown agent: {agent_filter}. Choose from: {list(all_agents.keys())}")
+            return None
+        agents_to_run = {agent_filter: all_agents[agent_filter]}
+    else:
+        agents_to_run = all_agents
+    
+    # Run agents
+    tasks = [
+        run_agent_in_thread(cls(), agent_contents[name])
+        for name, cls in agents_to_run.items()
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # If single-agent mode, merge into existing output
+    if agent_filter:
+        existing_output_path = # ... find existing JSON ...
+        if existing_output_path.exists():
+            existing = json.loads(existing_output_path.read_text())
+            # Merge just this agent's result into existing
+            # ... merge logic ...
+    
+    # ... rest of assembly ...
+```
+
+### CLI
+
+```bash
+# Full pipeline (classify + extract all 5 agents)
+uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ"
+
+# Re-run only one agent (uses existing manifest + existing JSON)
+uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --agent sponsor
+
+# Re-classify only (without re-running OCR or extraction)
+uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --reclassify
+```
+
+---
+
+## Build Order
+
+1. **`src/config.py`** — Model names + classifier settings from `.env`
+2. **`src/agents/document_classifier.py`** — Classifier agent (small model, 4 categories)
+3. **Modify [process_listing.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/process_listing.py)** — Add classification step after OCR, save `doc_manifest.json`
+4. **Modify [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py)** — Add routing logic + `--agent` flag
+5. **Modify `orchestrate_pipeline.py`** — Pass manifest through pipeline phases
+6. **Test on TierraMark** — Most diverse file set, ideal validation
