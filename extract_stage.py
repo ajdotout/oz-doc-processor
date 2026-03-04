@@ -4,13 +4,13 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-import re
-from dotenv import load_dotenv
 import argparse
+from typing import Dict, List
 
 # Add the current directory to sys.path to ensure src imports work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from dotenv import load_dotenv
 from src.agents.agents import (
     OverviewAgent,
     FinancialAgent,
@@ -19,6 +19,17 @@ from src.agents.agents import (
     SponsorAgent
 )
 from src.config import EXTRACTION_MODEL
+from src.pipeline.extraction_cache import (
+    sanitize_model_name,
+    cache_agent_paths,
+    compute_agent_input_signature,
+    compute_manifest_signature,
+    compute_prompt_signature,
+    load_cached_agent_output,
+    write_cached_agent_output,
+)
+from src.prompts import financial, market, overview, property, sponsor
+
 
 AGENT_ROUTING = {
     "overview": {"om", "supplemental"},
@@ -26,6 +37,13 @@ AGENT_ROUTING = {
     "property": {"om", "research", "supplemental"},
     "market": {"om", "research", "supplemental"},
     "sponsor": {"om", "supplemental"},
+}
+AGENT_OUTPUT_TYPES = {
+    "overview": overview.OverviewExtraction,
+    "financial": financial.FinancialExtraction,
+    "property": property.PropertyExtraction,
+    "market": market.MarketExtraction,
+    "sponsor": sponsor.SponsorExtraction,
 }
 
 # Set up logging
@@ -43,9 +61,14 @@ def load_environment():
         logging.info(f"Available keys: {[k for k in os.environ.keys() if 'API' in k or 'GEMINI' in k]}")
         sys.exit(1)
 
-async def run_agent_in_thread(agent, content):
-    """Runs a blocking agent.run() method in a separate thread."""
-    return await asyncio.to_thread(agent.run, content)
+def _run_agent_sync(agent_cls, content):
+    agent = agent_cls()
+    return agent.run(content)
+
+
+async def run_agent_in_thread(agent_cls, content):
+    """Runs a blocking agent inside a separate thread."""
+    return await asyncio.to_thread(_run_agent_sync, agent_cls, content)
 
 
 def to_dict(obj):
@@ -63,16 +86,16 @@ def to_block(type_name, data):
 
 
 def _model_filename_suffix(model_name: str) -> str:
-    sanitized = re.sub(r"[^a-zA-Z0-9_.-]+", "_", model_name.strip())
-    return sanitized or "unknown-model"
+    return sanitize_model_name(model_name)
 
 
 def _listing_output_path(markdown_path: str) -> str:
-    output_dir = os.path.dirname(markdown_path)
+    output_dir = Path(markdown_path).parent / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(markdown_path))[0]
     model_name = os.getenv("EXTRACTION_MODEL", EXTRACTION_MODEL)
     return os.path.join(
-        output_dir,
+        str(output_dir),
         f"{base_name}_modular_listing_{_model_filename_suffix(model_name)}.json"
     )
 
@@ -90,7 +113,7 @@ def build_detail_page(title, subtitle, sections_data):
     }
 
 
-async def run_pipeline(markdown_path: str, agent_filter: str = None):
+async def run_pipeline(markdown_path: str, agent_filter: str = None, no_cache: bool = False):
     listing_dir = Path(markdown_path).parent
     if not listing_dir.exists():
         logging.error(f"Listing directory not found: {listing_dir}")
@@ -139,7 +162,6 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
 
     agent_contents = {name: build_content(name) for name in AGENT_ROUTING}
 
-    logging.info("Initializing agents...")
     all_agents = {
         "overview": OverviewAgent,
         "financial": FinancialAgent,
@@ -147,6 +169,9 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
         "market": MarketAgent,
         "sponsor": SponsorAgent,
     }
+
+    model_name = os.getenv("EXTRACTION_MODEL", EXTRACTION_MODEL)
+    manifest_signature = compute_manifest_signature(manifest, file_entries)
 
     if agent_filter:
         if agent_filter not in all_agents:
@@ -156,44 +181,96 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
     else:
         agents_to_run = all_agents
 
-    logging.info("Running agents in parallel...")
-    results = await asyncio.gather(
-        *[
-            run_agent_in_thread(agent_class(), agent_contents[name])
-            for name, agent_class in agents_to_run.items()
-        ],
-        return_exceptions=True
-    )
+    agent_outputs: Dict[str, object] = {}
+    cached_output_paths: Dict[str, str] = {}
+    failed_agents: List[str] = []
+    run_tasks = []
+    run_task_meta = []
 
-    # Check for exceptions
-    for i, res in enumerate(results):
-        if isinstance(res, Exception):
-            logging.error(f"Agent {i} failed with error: {res}")
+    logging.info("Initializing agents...")
+    for name in agents_to_run:
+        content = agent_contents[name]
+        prompt_signature = compute_prompt_signature(name)
+        input_signature = compute_agent_input_signature(
+            name,
+            content,
+            manifest_signature,
+            prompt_signature,
+        )
+        if not no_cache:
+            cached_output = load_cached_agent_output(
+                listing_dir,
+                model_name,
+                name,
+                manifest_signature,
+                prompt_signature,
+                input_signature,
+            )
+            if cached_output is not None:
+                result_path, _ = cache_agent_paths(listing_dir, model_name, name)
+                try:
+                    model_type = AGENT_OUTPUT_TYPES[name]
+                    agent_outputs[name] = model_type.model_validate(cached_output)
+                    cached_output_paths[name] = str(result_path)
+                    logging.info(f"Loaded cached output for {name}.")
+                    continue
+                except Exception as exc:
+                    logging.warning(f"Cached output for {name} could not be loaded: {exc}")
+
+        try:
+            task = run_agent_in_thread(agents_to_run[name], content)
+            run_tasks.append(task)
+            run_task_meta.append((name, prompt_signature, input_signature))
+        except Exception as exc:
+            logging.error(f"Failed to start agent {name}: {exc}")
+            failed_agents.append(name)
+
+    if run_tasks:
+        logging.info("Running agents in parallel...")
+        results = await asyncio.gather(*run_tasks, return_exceptions=True)
+        for idx, res in enumerate(results):
+            name, prompt_signature, input_signature = run_task_meta[idx]
+            result_path, _ = cache_agent_paths(listing_dir, model_name, name)
+            if isinstance(res, Exception):
+                logging.error(f"Agent {name} failed with error: {res}")
+                failed_agents.append(name)
+                continue
+
+            agent_outputs[name] = res
+            cached_output_paths[name] = str(result_path)
+            try:
+                write_cached_agent_output(
+                    listing_dir=listing_dir,
+                    model_name=model_name,
+                    agent_name=name,
+                    output=to_dict(res),
+                    manifest_signature=manifest_signature,
+                    prompt_signature=prompt_signature,
+                    input_signature=input_signature,
+                )
+            except Exception as exc:
+                logging.error(f"Failed to cache agent output for {name}: {exc}")
+
+    if failed_agents:
+        logging.error(
+            "Extraction failed for: "
+            + ", ".join(sorted(failed_agents))
+        )
+    if agent_filter:
+        if agent_filter in failed_agents or agent_filter not in agent_outputs:
+            logging.error(f"Single-agent extract for '{agent_filter}' did not produce output.")
             return None
+        return cached_output_paths.get(agent_filter)
 
-    ordered_keys = list(agents_to_run.keys())
-    agent_outputs = dict(zip(ordered_keys, results))
-
-    # If running a single agent, merge into the existing modular JSON to keep other agents untouched.
-    existing_output_path = None
-    desired_output_path = _listing_output_path(markdown_path)
-    if agent_filter and os.path.exists(desired_output_path):
-        existing_output_path = desired_output_path
-
-    if agent_filter and not existing_output_path:
-        logging.error("Single-agent extract requires existing output file to merge with.")
+    if failed_agents:
+        logging.error("Final listing will not be written because one or more agents failed.")
         return None
-
-    if existing_output_path:
-        with open(existing_output_path, "r") as f:
-            final_listing = json.load(f)
-    else:
-        final_listing = {
-            "listingName": "",
-            "sections": [],
-            "newsLinks": [],
-            "details": {}
-        }
+    final_listing = {
+        "listingName": "",
+        "sections": [],
+        "newsLinks": [],
+        "details": {}
+    }
 
     overview_data, financial_data, property_data, market_data, sponsor_data = (
         agent_outputs.get("overview"),
@@ -326,9 +403,15 @@ async def main():
     )
     parser.add_argument("markdown_path")
     parser.add_argument("--agent", choices=["overview", "financial", "property", "market", "sponsor"], default=None)
+    parser.add_argument("--no-cache", action="store_true", help="Ignore cached agent outputs and regenerate.")
     args = parser.parse_args()
 
-    await run_pipeline(args.markdown_path, agent_filter=args.agent)
+    result_path = await run_pipeline(args.markdown_path, agent_filter=args.agent, no_cache=args.no_cache)
+    if result_path:
+        if args.agent:
+            print(f"Agent cache file: {result_path}")
+        else:
+            print(f"Final JSON: {result_path}")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -185,24 +185,33 @@ The local extraction flow is a strict three-stage pipeline:
 - Stage 2: classify
 - Stage 3: extract
 
+Listing inputs are expected in `listing-docs/<Listing>/input/`.
+
 From `oz-doc-processor/`, run:
 
 - Full pipeline:
-  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL"`
+  - `uv run python pipeline.py "Lakewire-Lakeland-FL"`
 - Convert only:
-  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage convert`
+  - `uv run python pipeline.py "Lakewire-Lakeland-FL" --stage convert`
 - Classify only:
-  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage classify`
+  - `uv run python pipeline.py "Lakewire-Lakeland-FL" --stage classify`
 - Extract only:
-  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract`
+  - `uv run python pipeline.py "Lakewire-Lakeland-FL" --stage extract`
 - Single-agent rerun:
-  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial`
+  - `uv run python pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial`
+- Rerun extraction from scratch (ignore agent cache):
+  - `uv run python pipeline.py "Lakewire-Lakeland-FL" --stage extract --no-cache`
 
 Notes:
 - `--agent` is only valid with `--stage extract`.
 - Stage 3 requires `doc_manifest.json`.
 - Stage 2 requires converted markdown artifacts from Stage 1.
-- Final JSON filenames include `EXTRACTION_MODEL` (for example: `lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`).
+- `--stage extract --agent <name>` runs only that agent and writes only the agent cache artifact.
+  Full consolidated listing JSON is written only when Stage 3 runs without `--agent`.
+- `--no-cache` only controls whether cached agent outputs are reused. Successful outputs are still written for selected agents.
+- Final consolidated listing JSON is written to:
+  - `listing-docs/<Listing>/outputs/<listing>_modular_listing_<EXTRACTION_MODEL_SANITIZED>.json`
+  - example: `listing-docs/Lakewire-Lakeland-FL/outputs/lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`
 
 ## API Integration Examples
 

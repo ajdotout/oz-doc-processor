@@ -21,7 +21,7 @@ This repository uses `uv` for ultra-fast Python package and project management. 
 
 ### Running a Script
 ```bash
-uv run python orchestrate_pipeline.py
+uv run python pipeline.py
 ```
 
 ### Adding a New Library

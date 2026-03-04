@@ -14,6 +14,7 @@ from src.config import (
 )
 from src.agents.document_classifier import DocumentClassifier
 
+INPUT_DIR_NAME = "input"
 
 def _safe_read_text(path: Path, fallback: str = "") -> str:
     try:
@@ -87,15 +88,20 @@ def _build_file_preview(file_path: Path, temp_dir: Path, classifier_lines: int, 
 
 
 def get_process_files(listing_dir: Path) -> List[Path]:
-    all_files = sorted(listing_dir.glob("*"))
-    excluded = {"temp", "images", "buckets"}
+    input_dir = listing_dir / INPUT_DIR_NAME
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise FileNotFoundError(
+            f"Missing required input directory: {input_dir}\n"
+            f"Place all source documents in: {input_dir}"
+        )
+
+    all_files = sorted(input_dir.glob("*"))
     return [
         f for f in all_files
         if f.is_file()
         and f.suffix.lower() in PROCESSABLE_EXTS
         and f.name not in {"doc_manifest.json", ".DS_Store"}
         and not f.name.endswith("_markdown.md")
-        and f.parent.name not in excluded
     ]
 
 

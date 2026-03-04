@@ -25,10 +25,10 @@ oz-doc-processor/
 │   ├── 491-Baltic-Brooklyn-NY/
 │   ├── Lakewire-Lakeland-FL/
 │   └── <other-listings>/
-├── orchestrate_pipeline.py               # Main staged orchestrator
-├── process_listing.py                    # Stage 1 conversion
-├── src/pipeline/classify_and_bucket.py   # Stage 2 classification + buckets
-├── run_modular_pipeline.py               # Stage 3 extraction
+├── pipeline.py                          # Main staged orchestrator
+├── convert_stage.py                     # Stage 1 conversion
+├── src/pipeline/classify_stage.py       # Stage 2 classification + buckets
+├── extract_stage.py                     # Stage 3 extraction
 ├── mistral_ocr.py                        # PDF OCR
 ├── excel_processor.py                    # Excel → Markdown
 ├── run_area_summary_ocr.py               # One-off OCR helper
@@ -39,7 +39,7 @@ oz-doc-processor/
 │   │   ├── base_extractor.py
 │   │   └── agents.py                     # Overview, Financial, Property, Market, Sponsor
 │   └── pipeline/
-│       └── classify_and_bucket.py        # Stage 2 implementation
+│       └── classify_stage.py            # Stage 2 implementation
 ```
 
 ---
@@ -47,7 +47,8 @@ oz-doc-processor/
 ## Stage 1 — Convert (`--stage convert`)
 
 ### What it does
-- Scans `listing-docs/<ListingFolder>/` for processable files: `.pdf`, `.xlsx`, `.xls`, `.md`.
+- Scans `listing-docs/<ListingFolder>/input/` for processable files: `.pdf`, `.xlsx`, `.xls`, `.md`.
+- Fails fast when `input/` is missing.
 - PDF: runs Mistral OCR, stores raw OCR JSON, converts OCR output to markdown.
 - Excel: converts all sheets to markdown tables via pandas.
 - Markdown: reads supplemental markdown directly.
@@ -62,13 +63,13 @@ oz-doc-processor/
 ### Run Stage 1
 
 ```bash
-uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage convert
+uv run python pipeline.py "Lakewire-Lakeland-FL" --stage convert
 ```
 
 Direct run:
 
 ```bash
-uv run python process_listing.py "Lakewire-Lakeland-FL"
+uv run python convert_stage.py "Lakewire-Lakeland-FL"
 ```
 
 ---
@@ -104,7 +105,7 @@ uv run python process_listing.py "Lakewire-Lakeland-FL"
 ### Run Stage 2
 
 ```bash
-uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage classify
+uv run python pipeline.py "Lakewire-Lakeland-FL" --stage classify
 ```
 
 ---
@@ -120,26 +121,38 @@ uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage classify
   - `property`
   - `market`
   - `sponsor`
-- Outputs final JSON with model name in filename:
-  - `<listing_name>_modular_listing_<EXTRACTION_MODEL_SANITIZED>.json`
-  - example: `lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`
+### Output behavior
+- Full extraction writes:
+  - `listing-docs/<Listing>/outputs/<listing>_modular_listing_<EXTRACTION_MODEL_SANITIZED>.json`
+  - example: `listing-docs/Lakewire-Lakeland-FL/outputs/lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`
+  - Single-agent extraction writes only the selected agent cache file under:
+    `listing-docs/<Listing>/agent_cache/extraction/<model>/.../<agent>/result.json`
 
 ### Run full extract
 
 ```bash
-uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract
+uv run python pipeline.py "Lakewire-Lakeland-FL" --stage extract
 ```
 
 ### Single agent rerun
 
 ```bash
-uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial
+uv run python pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial
+```
+
+### No-cache rerun
+
+```bash
+uv run python pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial --no-cache
 ```
 
 Direct extraction run (markdown path):
 
 ```bash
-uv run python run_modular_pipeline.py "listing-docs/Lakewire-Lakeland-FL/lakewire_lakeland_fl_markdown.md" --agent overview
+uv run python extract_stage.py "listing-docs/Lakewire-Lakeland-FL/lakewire_lakeland_fl_markdown.md" --agent overview
+```
+```bash
+uv run python extract_stage.py "listing-docs/Lakewire-Lakeland-FL/lakewire_lakeland_fl_markdown.md" --agent overview --no-cache
 ```
 
 ---
@@ -147,7 +160,7 @@ uv run python run_modular_pipeline.py "listing-docs/Lakewire-Lakeland-FL/lakewir
 ## Run all stages
 
 ```bash
-uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL"
+uv run python pipeline.py "Lakewire-Lakeland-FL"
 ```
 
 Equivalent to `--stage all`.
@@ -174,5 +187,5 @@ Optional / pipeline behavior:
 
 - `doc_manifest.json not found`: run Stage 2 first.
 - `Missing converted markdown`: rerun Stage 1.
-- `Single-agent extract requires existing output`: rerun full extract first for that model.
+- `Single-agent extract` does not write consolidated output. Full consolidated output is only generated when `--agent` is not passed.
 - `Listing directory does not exist`: check folder name under `listing-docs/`.

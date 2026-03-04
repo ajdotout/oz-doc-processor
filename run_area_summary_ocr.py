@@ -1,6 +1,6 @@
 import os
 from mistral_ocr import ocr_with_mistral, parse_and_save_markdown
-from process_listing import extract_images_from_ocr
+from convert_stage import extract_images_from_ocr
 from pathlib import Path
 from dotenv import load_dotenv
 

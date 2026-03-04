@@ -10,6 +10,10 @@ from excel_processor import process_excel_to_markdown
 from dotenv import load_dotenv
 from src.config import PROCESSABLE_EXTS
 
+INPUT_DIR_NAME = "input"
+TEMP_DIR_NAME = "temp"
+IMAGES_DIR_NAME = "images"
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,8 +32,23 @@ def get_listing_dir(listing_name: str) -> Path:
     raise FileNotFoundError(f"Listing directory not found: {listing_name}")
 
 
+def _input_dir(listing_dir: Path) -> Path:
+    return listing_dir / INPUT_DIR_NAME
+
+
+def _validate_input_dir(listing_dir: Path) -> Path:
+    input_dir = _input_dir(listing_dir)
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise RuntimeError(
+            f"Missing required input directory: {input_dir}\n"
+            f"Place all source files in: {input_dir}"
+        )
+    return input_dir
+
+
 def get_process_files(listing_dir: Path) -> List[Path]:
-    all_files = sorted(list(listing_dir.glob("*")))
+    input_dir = _validate_input_dir(listing_dir)
+    all_files = sorted(list(input_dir.glob("*")))
     return [
         f for f in all_files
         if f.is_file()
@@ -125,7 +144,7 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
 
     return image_count
 
-async def process_listing(listing_name: str):
+async def run_convert_stage(listing_name: str):
     """
     Stage 1 conversion for a listing:
     Converts source docs to markdown and writes a consolidated artifact.
@@ -137,13 +156,16 @@ async def process_listing(listing_name: str):
     process_files = get_process_files(listing_dir)
     
     if not process_files:
-        logging.error(f"No PDF or Excel files found in {listing_dir}")
+        logging.error(
+            "No processable documents found in "
+            f"{_input_dir(listing_dir)}. Expected .pdf, .xlsx, .xls, or .md."
+        )
         return
 
     base_name = listing_name.lower().replace(" ", "_").replace("-", "_")
     markdown_path = listing_dir / f"{base_name}_markdown.md"
-    images_dir = listing_dir / "images"
-    temp_dir = listing_dir / "temp"
+    images_dir = listing_dir / IMAGES_DIR_NAME
+    temp_dir = listing_dir / TEMP_DIR_NAME
     temp_dir.mkdir(parents=True, exist_ok=True)
     
     logging.info(f"📁 Processing {len(process_files)} files in parallel for {listing_name}...")
@@ -208,7 +230,7 @@ async def process_listing(listing_name: str):
 if __name__ == "__main__":
     load_dotenv()
     if len(sys.argv) > 1:
-        asyncio.run(process_listing(sys.argv[1]))
+        asyncio.run(run_convert_stage(sys.argv[1]))
     else:
         # Default to Celadon
-        asyncio.run(process_listing("Celadon"))
+        asyncio.run(run_convert_stage("Celadon"))

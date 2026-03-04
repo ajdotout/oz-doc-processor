@@ -101,20 +101,20 @@ EXTRACTION_MODEL=gemini-3-flash-preview
 
 ## Integration
 
-### [process_listing.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/process_listing.py) Changes
+### [convert_stage.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/convert_stage.py) Changes
 
 Stage 1 is **only conversion + consolidation**: process all files and write markdown artifacts.
-There is no classification in `process_listing.py`.
+There is no classification in `convert_stage.py`.
 
 ```python
-async def process_listing(listing_name: str):
+async def run_convert_stage(listing_name: str):
     # ... existing file processing (produces per-file markdowns in temp/) ...
     
     # Consolidate into one markdown artifact for inspection/debugging
     # No manifest/classification writes here.
 ```
 
-### New [src/pipeline/classify_and_bucket.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/src/pipeline/classify_and_bucket.py) Changes
+### New [src/pipeline/classify_stage.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/src/pipeline/classify_stage.py) Changes
 
 Stage 2 classifies docs and physically buckets files for auditability.
 
@@ -124,7 +124,7 @@ def build_excel_preview(excel_md: str, lines_per_sheet: int = 10) -> str:
     # Take only the first `lines_per_sheet` lines from each sheet section
     # Concatenate section headers + lines.
 
-async def classify_and_bucket(listing_dir: Path, force: bool = True):
+async def classify_listing(listing_dir: Path, force_rebuild_buckets: bool = True):
     # If rerun, clear all bucket folders before rebuild
     if force:
         shutil.rmtree(listing_dir / "buckets", ignore_errors=True)
@@ -140,7 +140,7 @@ async def classify_and_bucket(listing_dir: Path, force: bool = True):
     # 5) Return manifest path
 ```
 
-### [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py) Changes
+### [extract_stage.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/extract_stage.py) Changes
 
 Stage 3 runs extraction from manifest only. No fallback path.
 
@@ -210,30 +210,23 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # If single-agent mode, merge into existing output
-    if agent_filter:
-        existing_output_path = # ... find existing JSON ...
-        if existing_output_path.exists():
-            existing = json.loads(existing_output_path.read_text())
-            # Merge just this agent's result into existing
-            # ... merge logic ...
-    
-    # ... rest of assembly ...
+    # If single-agent mode, write only that agent's cache output.
+    # Full consolidated output is produced only when no agent_filter is set.
 ```
 
 ### CLI
 
 ```bash
 # Full 3-stage pipeline (convert -> classify -> extract)
-uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage all
+uv run python pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage all
 
 # Run from any stage
-uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage convert
-uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage classify
-uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage extract
+uv run python pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage convert
+uv run python pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage classify
+uv run python pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage extract
 
 # Re-run one extraction agent (without re-running classify/extract)
-uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --stage extract --agent sponsor
+uv run python extract_stage.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --agent sponsor
 ```
 
 ---
@@ -242,8 +235,8 @@ uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/
 
 1. **`src/config.py`** — Model names + classifier settings from `.env`
 2. **`src/agents/document_classifier.py`** — Classifier agent (small model, 4 categories)
-3. **Keep `process_listing.py` as Stage 1 converter** — outputs markdown + consolidated markdown only.
-4. **Add `src/pipeline/classify_and_bucket.py`** — classifies each file, rebuilds `buckets/` on rerun, and writes `doc_manifest.json`.
-5. **Modify [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py)** — remove fallback mode, require manifest, read from bucketed markdown and add `--stage extract` + `--agent`.
-6. **Modify `orchestrate_pipeline.py`** — add stage flags (`convert`, `classify`, `extract`, `all`) and stage guards.
+3. **Keep `convert_stage.py` as Stage 1 converter** — outputs markdown + consolidated markdown only.
+4. **Use `src/pipeline/classify_stage.py`** — classifies each file, rebuilds `buckets/` on rerun, and writes `doc_manifest.json`.
+5. **Modify `extract_stage.py`** — require manifest, read from bucketed markdown, and add `--stage extract` + `--agent` in orchestrator flow.
+6. **Modify `pipeline.py`** — add stage flags (`convert`, `classify`, `extract`, `all`) and stage guards.
 7. **Test on TierraMark** — Most diverse file set, ideal validation for rerun and bucket rebuild behavior.

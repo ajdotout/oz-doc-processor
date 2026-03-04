@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 # Add the current directory to sys.path to ensure imports work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from process_listing import get_listing_dir, process_listing
-from run_modular_pipeline import run_pipeline
-from src.pipeline.classify_and_bucket import classify_listing
+from convert_stage import get_listing_dir, run_convert_stage
+from extract_stage import run_pipeline
+from src.pipeline.classify_stage import classify_listing
 
 STAGES = ("convert", "classify", "extract", "all")
 AGENT_CHOICES = ["overview", "financial", "property", "market", "sponsor"]
@@ -25,7 +25,7 @@ def _markdown_path(listing_dir: Path) -> str:
     return str(listing_dir / f"{base_name}_markdown.md")
 
 
-async def orchestrate(listing_name: str, stage: str = "all", agent: Optional[str] = None):
+async def orchestrate(listing_name: str, stage: str = "all", agent: Optional[str] = None, no_cache: bool = False):
     """
     Orchestrates the 3-stage pipeline:
     convert -> classify -> extract
@@ -37,6 +37,9 @@ async def orchestrate(listing_name: str, stage: str = "all", agent: Optional[str
     if agent and stage != "extract":
         logging.error("--agent can only be used with --stage extract")
         return
+    if no_cache and stage not in ("extract", "all"):
+        logging.error("--no-cache can only be used with --stage extract or --stage all")
+        return
 
     listing_dir = None
     markdown_path: Optional[str] = None
@@ -44,7 +47,7 @@ async def orchestrate(listing_name: str, stage: str = "all", agent: Optional[str
     if stage in ("convert", "all"):
         logging.info("STAGE 1: Converting documents to markdown...")
         try:
-            markdown_path = await process_listing(listing_name)
+            markdown_path = await run_convert_stage(listing_name)
             if not markdown_path or not os.path.exists(markdown_path):
                 logging.error("Failed to generate markdown path. Aborting.")
                 return
@@ -85,14 +88,22 @@ async def orchestrate(listing_name: str, stage: str = "all", agent: Optional[str
             if listing_dir is None:
                 listing_dir = get_listing_dir(listing_name)
             markdown_path = markdown_path or _markdown_path(listing_dir)
-            json_path = await run_pipeline(markdown_path, agent_filter=agent)
+            json_path = await run_pipeline(markdown_path, agent_filter=agent, no_cache=no_cache)
             if not json_path:
-                logging.error("Failed to generate final JSON. Aborting.")
+                if agent:
+                    logging.error("Failed to generate agent cache output. Aborting.")
+                else:
+                    logging.error("Failed to generate final JSON. Aborting.")
                 return
-            logging.info(f"STAGE 3 COMPLETE: {json_path}")
-            logging.info(f"=========== ORCHESTRATION SUCCESSFUL FOR: {listing_name} ===========")
-            print(f"\nSuccessfully processed '{listing_name}'")
-            print(f"Final JSON: {json_path}\n")
+            if agent:
+                logging.info(f"Single-agent cache artifact: {json_path}")
+                print(f"\nSuccessfully processed '{listing_name}'")
+                print(f"Agent cache file: {json_path}\n")
+            else:
+                logging.info(f"STAGE 3 COMPLETE: {json_path}")
+                logging.info(f"=========== ORCHESTRATION SUCCESSFUL FOR: {listing_name} ===========")
+                print(f"\nSuccessfully processed '{listing_name}'")
+                print(f"Final JSON: {json_path}\n")
         except Exception as e:
             logging.error(f"Error in Stage 3 (extract): {e}")
             return
@@ -103,6 +114,7 @@ if __name__ == "__main__":
     parser.add_argument("listing_name")
     parser.add_argument("--stage", choices=STAGES, default="all")
     parser.add_argument("--agent", choices=AGENT_CHOICES, default=None)
+    parser.add_argument("--no-cache", action="store_true", help="Ignore cached agent outputs and regenerate.")
     args = parser.parse_args()
 
-    asyncio.run(orchestrate(args.listing_name, stage=args.stage, agent=args.agent))
+    asyncio.run(orchestrate(args.listing_name, stage=args.stage, agent=args.agent, no_cache=args.no_cache))
