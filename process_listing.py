@@ -121,9 +121,15 @@ async def process_listing(listing_name: str):
             logging.error(f"Listing directory {listing_dir} does not exist.")
             return
 
-    # Find relevant listing documents (.pdf, .xlsx, .xls)
-    all_files = sorted(list(listing_dir.glob("*"))) 
-    process_files = [f for f in all_files if f.suffix.lower() in [".pdf", ".xlsx", ".xls"]]
+    # Find relevant listing documents (.pdf, .xlsx, .xls, .md)
+    # .md files are included as supplemental context (e.g., sponsor emails, notes)
+    # but we exclude the consolidated output markdown itself
+    all_files = sorted(list(listing_dir.glob("*")))
+    process_files = [
+        f for f in all_files
+        if f.suffix.lower() in [".pdf", ".xlsx", ".xls", ".md"]
+        and not f.name.endswith("_markdown.md")  # skip the output file itself
+    ]
     
     if not process_files:
         logging.error(f"No PDF or Excel files found in {listing_dir}")
@@ -161,6 +167,11 @@ async def process_listing(listing_name: str):
                 temp_md = temp_dir / f"{doc_path.stem}.md"
                 await asyncio.to_thread(process_excel_to_markdown, str(doc_path), str(temp_md))
                 with open(temp_md, 'r') as f:
+                    file_md = f.read()
+
+            elif ext == ".md":
+                # Supplemental markdown (e.g., sponsor emails, notes) — read directly
+                with open(doc_path, 'r') as f:
                     file_md = f.read()
 
             if file_md:
