@@ -45,7 +45,7 @@ You are an expert Real Estate Due Diligence Officer. Your goal is to extract the
 - **Goal**: If strict fund details are separate from the intro, extract them here.
 - **Sections to Extract**: `DistributionTimeline`, `TaxBenefits` (reuse from Financial if identical), `InvestmentStructure` (Min Inv, Fees).
 
-### 7. HOW INVESTORS PARTICIPATE (New/Codebase Specific)
+### 8. HOW INVESTORS PARTICIPATE (New/Codebase Specific)
 - **Goal**: Steps to invest.
 - **Look for**: "Subscription Process", "Next Steps".
 - **Schema**: Title ("Review Docs"), Icon ("FileText"), Points ("Sign PPM", "Fund Account").

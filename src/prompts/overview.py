@@ -12,7 +12,7 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
 - **Rules**:
     - `listingName`: Use the official marketing name (e.g. "The Edge on Main").
     - `location`: City, State format (e.g. "Mesa, AZ").
-    - `minInvestment`: Number only.
+    - `minInvestment`: Number only, if stated in the document.
     - `fundName`: The legal entity name of the fund.
 
 ### 2. TICKER METRICS
@@ -54,10 +54,10 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
 - **Metrics**: Select the top 3 metrics for each card that best represent that specific section.
 - **Sponsor Profile Formatting**:
     - `title`: MUST be exactly "Sponsor Profile" (do not include the sponsor's name in the title).
-    - `keyMetrics`: 
-    - The FIRST metric MUST have `label`: "Sponsor Name" and `value`: the actual name of the sponsor.
-    - The remaining 2 metrics MUST be credibility markers about the **sponsor as an entity** (e.g., 'AUM', 'Units Developed', 'Years Active', 'Portfolio Value', 'Projects Completed'). 
-    - **NEVER** use deal-level metrics (IRR, Equity Multiple, Preferred Return) in the Sponsor Profile card.
+    - `keyMetrics`:
+        - The FIRST metric MUST have `label`: "Sponsor Name" and `value`: the actual name of the sponsor.
+        - The remaining 2 metrics MUST be credibility markers about the **sponsor as an entity** (e.g., 'AUM', 'Units Developed', 'Years Active', 'Portfolio Value', 'Projects Completed'). 
+        - **NEVER** use deal-level metrics (IRR, Equity Multiple, Preferred Return) in the Sponsor Profile card.
 - **IDs**: Use exactly one of the IDs: 'financial-returns', 'property-overview', 'market-analysis', 'sponsor-profile', 'portfolio-projects', 'how-investors-participate'.
 
 ### 6. NEWS LINKS (Optional)

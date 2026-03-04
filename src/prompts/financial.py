@@ -51,7 +51,7 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
 # --- Schema ---
 
 class Projection(BaseModel):
-    label: str = Field(..., description="Metric name. First 3 MUST be '10-Yr Equity Multiple', 'Target IRR', 'Preferred Return'")
+    label: str = Field(..., description="Metric label, e.g. 'Target IRR' or 'Yield on Cost'")
     value: str = Field(..., description="Value, e.g. '17.7%'")
     description: str = Field(..., description="Short explanation of the metric")
 
