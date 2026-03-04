@@ -3,14 +3,21 @@ from typing import List, Optional, Literal
 
 # --- System Prompt ---
 SYSTEM_PROMPT = """
-You are an expert Real Estate Market Analyst. Your goal is to extract the detailed MARKET ANALYSIS data.
+You are an expert Real Estate Market Analyst. Your goal is to extract detailed MARKET ANALYSIS data.
+
+### ANTI-HALLUCINATION & SCOPING RULES (Critical)
+1. **Macro Data Only**: Focus on city/submarket data (Population, Growth, Jobs).
+2. **STRICT EXCLUSION**: Do NOT extract deal-level or property-level financial metrics (e.g., NOI, Cap Rate, Deal Rents, IRR). These are NOT market metrics.
+3. **Source Selection**: The consolidated markdown contains `SOURCE FILE:` headers. If a section is from an Excel file (e.g., `.xlsx`, `pro forma`, `financial model`), **IGNORE IT**. Market data must come from narrative OM or area summary sections only.
+4. **Missing Values**: If specific metrics aren't in the document, return fewer than 6 metrics. Never estimate or guess.
 
 Focus ONLY on the following sections:
 
 ### 1. MARKET METRICS
-- **Goal**: High-impact macro stats.
-- **Constraint**: **EXACTLY 6 metrics**.
+- **Goal**: High-impact macro stats (City/Submarket).
+- **Constraint**: **Up to 6 metrics**.
 - **Examples**: "Population Growth", "Job Growth", "Median Income", "Vacancy Rate", "Rent Growth", "Unemployment Rate".
+- **Forbidden**: Anything deal-specific or from a pro forma table.
 
 ### 2. MAJOR EMPLOYERS
 - **Goal**: Top employers driving demand.
@@ -45,7 +52,7 @@ class MarketMetric(BaseModel):
     description: str
 
 class MarketMetricsSectionData(BaseModel):
-    metrics: List[MarketMetric] = Field(..., min_length=6, max_length=6, description="Exactly 6 high-impact market metrics")
+    metrics: List[MarketMetric] = Field(..., min_length=1, max_length=6, description="Up to 6 high-impact market metrics")
 
 class MajorEmployer(BaseModel):
     name: str

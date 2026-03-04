@@ -15,10 +15,12 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
     - `minInvestment`: Number only.
     - `fundName`: The legal entity name of the fund.
 
-### 2. TICKER METRICS (Critical)
-- **Goal**: A scrolling marquee of key metrics.
+### 2. TICKER METRICS
+- **Goal**: A scrolling marquee of exactly 6 metrics that make the property very special.
 - **Constraint**: **EXACTLY 6 metrics**.
-- **Labels**: You MUST use these exact labels where possible: '10-Yr Equity Multiple', 'Preferred Return', 'Min Investment', 'Location', 'Hold Period', 'Tax Benefit'.
+- **Strategy**: Select the most interesting and impressive metrics found in the text.
+- **Labels**: Use clear, investor-focused labels. Recommended (if interesting): '10-Yr Equity Multiple', 'Preferred Return', 'Min Investment', 'Location', 'Hold Period', 'Tax Benefit'. 
+- **Preference**: Prioritize metrics that highlight what is "special" about this deal (e.g. "Walk Score", "Anchor Tenant", "Yield on Cost").
 - **Heuristic**: If '10-Yr Equity Multiple' is not explicit, look for "Multiple of Capital" or "MOIC".
 - **Formatting**:
     - `value`: Concise (e.g., "2.8x", "15%").
@@ -27,15 +29,18 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
 ### 3. COMPELLING REASONS
 - **Goal**: Three highlighted cards explaining the top reasons to invest.
 - **Constraint**: **EXACTLY 3 items**.
-- **Content**: Focus on the most positive aspects (e.g., Tax Status, Location, Innovation).
+- **Exclusion Rule**: **DO NOT INCLUDE 'Opportunity Zone Benefit' or generic tax tax benefits**. This is an OZ platform; every deal has these. Focus on unique property/market/deal attributes that differentiate this from other OZ projects.
+- **Content**: Focus on the most positive aspects (e.g., Location, Innovation, Supply/Demand imbalance).
 - **Icons**: Choose a relevant Lucide icon name (e.g., "Rocket", "BarChart3", "MapPin").
 
 ### 4. EXECUTIVE SUMMARY
-- **Goal**: A detailed narrative summary.
+- **Goal**: A verbatim or highly faithful narrative summary.
+- **Priority 1 (Verbatim Extraction)**: Search the document for sections titled "Executive Summary", "Investment Summary", or "Project Overview". If a narrative summary exists, **copy-paste the text exactly**. Do not paraphrase unless the text is garbled.
+- **Priority 2 (Synthesis)**: Only if no prose summary exists (e.g., the deck is just metrics/tables), synthesize a summary from the deal's key attributes.
 - **Structure**:
-    - `quote`: A standout, punchy sentence from the documents.
-    - `paragraphs`: **EXACTLY A LIST OF 2 STRINGS**. concise paragraphs (3-4 sentences each).
-    - `conclusion`: A final closing sentence summarizing the opportunity.
+    - `quote`: A standout, punchy verbatim sentence from the summary.
+    - `paragraphs`: **LIST OF 2 STRINGS**. If copying from the document, use the first two meaningful paragraphs.
+    - `conclusion`: A final closing sentence summarizing the opportunity (often the last sentence of the document's summary).
 
 ### 5. INVESTMENT CARDS (Summary & Selection)
 - **Goal**: Select EXACTLY 4 detail page links to display in the 2x2 grid.
@@ -50,8 +55,9 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
 - **Sponsor Profile Formatting**:
     - `title`: MUST be exactly "Sponsor Profile" (do not include the sponsor's name in the title).
     - `keyMetrics`: 
-        - The FIRST metric MUST have `label`: "Sponsor Name" and `value`: the actual name of the sponsor.
-        - The remaining 2 metrics should be credibility markers (e.g., "Years Active", "Units Built").
+    - The FIRST metric MUST have `label`: "Sponsor Name" and `value`: the actual name of the sponsor.
+    - The remaining 2 metrics MUST be credibility markers about the **sponsor as an entity** (e.g., 'AUM', 'Units Developed', 'Years Active', 'Portfolio Value', 'Projects Completed'). 
+    - **NEVER** use deal-level metrics (IRR, Equity Multiple, Preferred Return) in the Sponsor Profile card.
 - **IDs**: Use exactly one of the IDs: 'financial-returns', 'property-overview', 'market-analysis', 'sponsor-profile', 'portfolio-projects', 'how-investors-participate'.
 
 ### 6. NEWS LINKS (Optional)
@@ -63,11 +69,11 @@ You will be provided with the full text of the document (OCR output). Focus ONLY
 class HeroSectionData(BaseModel):
     listingName: str = Field(..., description="The main title of the listing.")
     location: str = Field(..., description="City and State, e.g. 'Mesa, AZ'")
-    minInvestment: int = Field(..., description="Minimum investment amount in USD, e.g. 250000")
+    minInvestment: Optional[int] = Field(None, description="Minimum investment amount in USD, if stated.")
     fundName: str = Field(..., description="Name of the associated fund")
 
 class TickerMetric(BaseModel):
-    label: Literal["10-Yr Equity Multiple", "Preferred Return", "Min Investment", "Location", "Hold Period", "Tax Benefit"]
+    label: str = Field(..., description="The metric label, e.g. 'Preferred Return' or 'Location'")
     value: str = Field(..., description="The value, e.g. '2.8x'")
     change: str = Field(..., description="Short context, e.g. '+12%' or 'Guaranteed'")
 

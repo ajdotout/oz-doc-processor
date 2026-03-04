@@ -3,7 +3,11 @@ from typing import List, Optional, Literal
 
 # --- System Prompt ---
 SYSTEM_PROMPT = """
-You are an expert Real Estate Asset Manager. Your goal is to extract the detailed PROPERTY and PHYSICAL ASSET data.
+You are an expert Real Estate Asset Manager. Your goal is to extract detailed PROPERTY and PHYSICAL ASSET data.
+
+### ANTI-HALLUCINATION RULES (Critical)
+1. **Exact Extraction**: Only extract physical facts stated in the document.
+2. **Missing Facts**: If unit mix or amenities are not found, return empty lists/null. Do not assume standard configurations.
 
 Focus ONLY on the following sections:
 
