@@ -5,6 +5,7 @@ import asyncio
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+import argparse
 
 # Add the current directory to sys.path to ensure src imports work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -16,6 +17,14 @@ from src.agents.agents import (
     MarketAgent,
     SponsorAgent
 )
+
+AGENT_ROUTING = {
+    "overview": {"om", "supplemental"},
+    "financial": {"om", "proforma", "supplemental"},
+    "property": {"om", "research", "supplemental"},
+    "market": {"om", "research", "supplemental"},
+    "sponsor": {"om", "supplemental"},
+}
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,33 +45,106 @@ async def run_agent_in_thread(agent, content):
     """Runs a blocking agent.run() method in a separate thread."""
     return await asyncio.to_thread(agent.run, content)
 
-async def run_pipeline(markdown_path: str):
-    if not os.path.exists(markdown_path):
-        logging.error(f"File not found: {markdown_path}")
+
+def to_dict(obj):
+    if hasattr(obj, 'model_dump'):
+        return obj.model_dump()
+    if isinstance(obj, list):
+        return [to_dict(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: to_dict(v) for k, v in obj.items()}
+    return obj
+
+
+def to_block(type_name, data):
+    return {"type": type_name, "data": to_dict(data)}
+
+
+def build_detail_page(title, subtitle, sections_data):
+    page_sections = []
+    for s_type, s_data in sections_data:
+        if s_data:
+            page_sections.append(to_block(s_type, s_data))
+    return {
+        "pageTitle": title,
+        "pageSubtitle": subtitle,
+        "backgroundImages": [],
+        "sections": page_sections
+    }
+
+
+async def run_pipeline(markdown_path: str, agent_filter: str = None):
+    listing_dir = Path(markdown_path).parent
+    if not listing_dir.exists():
+        logging.error(f"Listing directory not found: {listing_dir}")
         return None
 
     load_environment()
+    manifest_path = listing_dir / "doc_manifest.json"
+    if not manifest_path.exists():
+        logging.error("doc_manifest.json not found. Run the classify stage first.")
+        return None
 
-    logging.info(f"Reading markdown file: {markdown_path}")
-    with open(markdown_path, 'r') as f:
-        markdown_content = f.read()
+    logging.info(f"Loading manifest: {manifest_path}")
+    with manifest_path.open("r") as f:
+        manifest = json.load(f)
+
+    file_entries = manifest.get("files", [])
+    if not file_entries:
+        logging.error("No files found in manifest. Run classify again.")
+        return None
+
+    per_file_markdowns = {}
+    for entry in file_entries:
+        fname = entry.get("filename")
+        category = entry.get("category", "supplemental")
+        temp_path = listing_dir / entry.get("temp_md_path", f"buckets/{category}/temp/{Path(fname).stem}.md")
+        if not temp_path.exists():
+            logging.error(f"Missing bucketed temp markdown for {fname}: {temp_path}")
+            return None
+        try:
+            with temp_path.open("r") as f:
+                per_file_markdowns[fname] = f.read()
+        except Exception as e:
+            logging.error(f"Failed reading markdown for {fname}: {e}")
+            return None
+
+    classifications = {entry.get("filename"): entry.get("category") for entry in file_entries}
+
+    def build_content(agent_name):
+        allowed = AGENT_ROUTING[agent_name]
+        sections = []
+        for fname, content in per_file_markdowns.items():
+            if classifications.get(fname) in allowed:
+                header = f"\n{'='*40}\nSOURCE FILE: {fname}\n{'='*40}\n\n"
+                sections.append(header + content)
+        return "\n".join(sections)
+
+    agent_contents = {name: build_content(name) for name in AGENT_ROUTING}
 
     logging.info("Initializing agents...")
-    overview_agent = OverviewAgent()
-    financial_agent = FinancialAgent()
-    property_agent = PropertyAgent()
-    market_agent = MarketAgent()
-    sponsor_agent = SponsorAgent()
+    all_agents = {
+        "overview": OverviewAgent,
+        "financial": FinancialAgent,
+        "property": PropertyAgent,
+        "market": MarketAgent,
+        "sponsor": SponsorAgent,
+    }
+
+    if agent_filter:
+        if agent_filter not in all_agents:
+            logging.error(f"Unknown agent: {agent_filter}. Choose from: {list(all_agents.keys())}")
+            return None
+        agents_to_run = {agent_filter: all_agents[agent_filter]}
+    else:
+        agents_to_run = all_agents
 
     logging.info("Running agents in parallel...")
-    
-    # Run all agents concurrently
     results = await asyncio.gather(
-        run_agent_in_thread(overview_agent, markdown_content),
-        run_agent_in_thread(financial_agent, markdown_content),
-        run_agent_in_thread(property_agent, markdown_content),
-        run_agent_in_thread(market_agent, markdown_content),
-        run_agent_in_thread(sponsor_agent, markdown_content),
+        *[
+            run_agent_in_thread(agent_class(), agent_contents[name])
+            for name, agent_class in agents_to_run.items()
+        ],
         return_exceptions=True
     )
 
@@ -72,51 +154,61 @@ async def run_pipeline(markdown_path: str):
             logging.error(f"Agent {i} failed with error: {res}")
             return None
 
-    overview_data, financial_data, property_data, market_data, sponsor_data = results
+    ordered_keys = list(agents_to_run.keys())
+    agent_outputs = dict(zip(ordered_keys, results))
 
-    logging.info("All agents completed successfully. Assembling final JSON...")
+    # If running a single agent, merge into the existing modular JSON to keep other agents untouched.
+    existing_output_path = None
+    output_dir = os.path.dirname(markdown_path)
+    base_name = os.path.splitext(os.path.basename(markdown_path))[0]
+    output_path = os.path.join(output_dir, f"{base_name}_modular_listing_gemini3.json")
+    if agent_filter and os.path.exists(output_path):
+        existing_output_path = output_path
 
-    # Construct the final Listing structure
-    # Helper to convert Pydantic model to dict (recursively handling lists/dicts)
-    def to_dict(obj):
-        if hasattr(obj, 'model_dump'):
-            return obj.model_dump()
-        if isinstance(obj, list):
-            return [to_dict(item) for item in obj]
-        if isinstance(obj, dict):
-            return {k: to_dict(v) for k, v in obj.items()}
-        return obj
+    if agent_filter and not existing_output_path:
+        logging.error("Single-agent extract requires existing output file to merge with.")
+        return None
 
-    # Helper to wrap in block structure
-    def to_block(type_name, data):
-        return {"type": type_name, "data": to_dict(data)}
-
-    # Overview Data (Sections)
-    sections = [
-        to_block("hero", overview_data.hero),
-        to_block("tickerMetrics", overview_data.tickerMetrics),
-        to_block("compellingReasons", overview_data.compellingReasons),
-        to_block("executiveSummary", overview_data.executiveSummary),
-        to_block("investmentCards", overview_data.investmentCards)
-    ]
-
-    # Helper for detail page construction
-    def build_detail_page(title, subtitle, sections_data):
-        page_sections = []
-        for s_type, s_data in sections_data:
-            if s_data:
-                page_sections.append(to_block(s_type, s_data))
-        return {
-            "pageTitle": title,
-            "pageSubtitle": subtitle,
-            "backgroundImages": [],
-            "sections": page_sections
+    if existing_output_path:
+        with open(existing_output_path, "r") as f:
+            final_listing = json.load(f)
+    else:
+        final_listing = {
+            "listingName": "",
+            "sections": [],
+            "newsLinks": [],
+            "details": {}
         }
 
-    # Details Data
-    details = {
-        "financialReturns": build_detail_page(
-            "Financial Returns", 
+    overview_data, financial_data, property_data, market_data, sponsor_data = (
+        agent_outputs.get("overview"),
+        agent_outputs.get("financial"),
+        agent_outputs.get("property"),
+        agent_outputs.get("market"),
+        agent_outputs.get("sponsor"),
+    )
+
+    if "overview" in agents_to_run:
+        if not overview_data:
+            logging.error("Overview output missing.")
+            return None
+        sections = [
+            to_block("hero", overview_data.hero),
+            to_block("tickerMetrics", overview_data.tickerMetrics),
+            to_block("compellingReasons", overview_data.compellingReasons),
+            to_block("executiveSummary", overview_data.executiveSummary),
+            to_block("investmentCards", overview_data.investmentCards)
+        ]
+        final_listing["listingName"] = overview_data.hero.listingName
+        final_listing["sections"] = sections
+        final_listing["newsLinks"] = to_dict(overview_data.newsLinks) if overview_data.newsLinks else []
+
+    if "financial" in agents_to_run:
+        if not financial_data:
+            logging.error("Financial output missing.")
+            return None
+        final_listing.setdefault("details", {})["financialReturns"] = build_detail_page(
+            "Financial Returns",
             "Detailed financial projections and investment structure",
             [
                 ("projections", financial_data.projections),
@@ -126,8 +218,13 @@ async def run_pipeline(markdown_path: str):
                 ("investmentStructure", financial_data.structure),
                 ("distributionWaterfall", financial_data.waterfall)
             ]
-        ),
-        "propertyOverview": build_detail_page(
+        )
+
+    if "property" in agents_to_run:
+        if not property_data:
+            logging.error("Property output missing.")
+            return None
+        final_listing.setdefault("details", {})["propertyOverview"] = build_detail_page(
             "Property Overview",
             "Physical asset details and site characteristics",
             [
@@ -139,8 +236,13 @@ async def run_pipeline(markdown_path: str):
                 ("developmentTimeline", property_data.timeline),
                 ("developmentPhases", property_data.phases)
             ]
-        ),
-        "marketAnalysis": build_detail_page(
+        )
+
+    if "market" in agents_to_run:
+        if not market_data:
+            logging.error("Market output missing.")
+            return None
+        final_listing.setdefault("details", {})["marketAnalysis"] = build_detail_page(
             "Market Analysis",
             "Local economic drivers and competitive landscape",
             [
@@ -152,8 +254,13 @@ async def run_pipeline(markdown_path: str):
                 ("competitiveAnalysis", market_data.competitors),
                 ("economicDiversification", market_data.diversification)
             ]
-        ),
-        "sponsorProfile": {
+        )
+
+    if "sponsor" in agents_to_run:
+        if not sponsor_data:
+            logging.error("Sponsor output missing.")
+            return None
+        final_listing.setdefault("details", {})["sponsorProfile"] = {
             "sponsorName": sponsor_data.intro.sponsorName if sponsor_data.intro else "Sponsor Profile",
             "sections": [
                 to_block(t, d) for t, d in [
@@ -166,41 +273,30 @@ async def run_pipeline(markdown_path: str):
                 ] if d
             ]
         }
-    }
 
-    # Add optional detail pages
-    if sponsor_data.portfolio:
-        details["portfolioProjects"] = build_detail_page(
-            "Portfolio Projects",
-            "Overview of the assets currently in the portfolio",
-            [("projectOverview", sponsor_data.portfolio)]
-        )
+        if sponsor_data.portfolio:
+            final_listing["details"]["portfolioProjects"] = build_detail_page(
+                "Portfolio Projects",
+                "Overview of the assets currently in the portfolio",
+                [("projectOverview", sponsor_data.portfolio)]
+            )
+        if sponsor_data.fundEntities or sponsor_data.fundDetails:
+            final_listing["details"]["fundStructure"] = build_detail_page(
+                "Fund Structure",
+                "Entity structure and legal framework of the fund",
+                [
+                    ("fundSponsorEntities", sponsor_data.fundEntities),
+                    ("fundDetails", sponsor_data.fundDetails)
+                ]
+            )
+        if sponsor_data.participationSteps:
+            final_listing["details"]["howInvestorsParticipate"] = build_detail_page(
+                "How to Participate",
+                "Next steps for qualified investors",
+                [("participationSteps", sponsor_data.participationSteps)]
+            )
 
-    if sponsor_data.fundEntities or sponsor_data.fundDetails:
-        details["fundStructure"] = build_detail_page(
-            "Fund Structure",
-            "Entity structure and legal framework of the fund",
-            [
-                ("fundSponsorEntities", sponsor_data.fundEntities),
-                ("fundDetails", sponsor_data.fundDetails)
-            ]
-        )
-
-    if sponsor_data.participationSteps:
-        details["howInvestorsParticipate"] = build_detail_page(
-            "How to Participate",
-            "Next steps for qualified investors",
-            [("participationSteps", sponsor_data.participationSteps)]
-        )
-
-    final_listing = {
-        "listingName": overview_data.hero.listingName,
-        "sections": sections,
-        "newsLinks": to_dict(overview_data.newsLinks) if overview_data.newsLinks else [],
-        "details": details
-    }
-    
-    # Save output
+    # Ensure output directory exists.
     output_dir = os.path.dirname(markdown_path)
     base_name = os.path.splitext(os.path.basename(markdown_path))[0]
     output_path = os.path.join(output_dir, f"{base_name}_modular_listing_gemini3.json")
@@ -212,12 +308,14 @@ async def run_pipeline(markdown_path: str):
     return output_path
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python run_modular_pipeline.py <path_to_markdown_file>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Run extraction from classified markdown buckets."
+    )
+    parser.add_argument("markdown_path")
+    parser.add_argument("--agent", choices=["overview", "financial", "property", "market", "sponsor"], default=None)
+    args = parser.parse_args()
 
-    markdown_path = sys.argv[1]
-    await run_pipeline(markdown_path)
+    await run_pipeline(args.markdown_path, agent_filter=args.agent)
 
 if __name__ == "__main__":
     asyncio.run(main())

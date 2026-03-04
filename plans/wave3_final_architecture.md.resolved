@@ -91,6 +91,7 @@ Dropped the `confidence` field — 4 categories is simple enough that confidence
 # Classification
 CLASSIFIER_MODEL=gemini-2.0-flash-lite
 CLASSIFIER_LINES=100
+CLASSIFIER_EXCEL_SHEET_LINES=10
 
 # Extraction
 EXTRACTION_MODEL=gemini-3-flash-preview
@@ -102,49 +103,46 @@ EXTRACTION_MODEL=gemini-3-flash-preview
 
 ### [process_listing.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/process_listing.py) Changes
 
-After all files are OCR'd/converted to markdown, before consolidation:
+Stage 1 is **only conversion + consolidation**: process all files and write markdown artifacts.
+There is no classification in `process_listing.py`.
 
 ```python
 async def process_listing(listing_name: str):
     # ... existing file processing (produces per-file markdowns in temp/) ...
     
-    # NEW: Classify each file
-    per_file_markdowns = {}
-    for doc_path in process_files:
-        if doc_path.suffix.lower() in [".pdf", ".xlsx", ".xls"]:
-            temp_md = temp_dir / f"{doc_path.stem}.md"
-            per_file_markdowns[doc_path.name] = temp_md.read_text()
-        elif doc_path.suffix.lower() == ".md":
-            per_file_markdowns[doc_path.name] = doc_path.read_text()
+    # Consolidate into one markdown artifact for inspection/debugging
+    # No manifest/classification writes here.
+```
+
+### New [src/pipeline/classify_and_bucket.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/src/pipeline/classify_and_bucket.py) Changes
+
+Stage 2 classifies docs and physically buckets files for auditability.
+
+```python
+def build_excel_preview(excel_md: str, lines_per_sheet: int = 10) -> str:
+    # Split by "### EXTERNAL DATA SOURCE: Excel Sheet - <name>"
+    # Take only the first `lines_per_sheet` lines from each sheet section
+    # Concatenate section headers + lines.
+
+async def classify_and_bucket(listing_dir: Path, force: bool = True):
+    # If rerun, clear all bucket folders before rebuild
+    if force:
+        shutil.rmtree(listing_dir / "buckets", ignore_errors=True)
     
-    classifications = await classify_documents(per_file_markdowns)
-    
-    # Save manifest alongside the consolidated markdown
-    manifest = {
-        "listing": listing_name,
-        "classified_with": CLASSIFIER_MODEL,
-        "files": [
-            {
-                "filename": fname,
-                "category": cls.category,
-                "reasoning": cls.reasoning,
-                "char_count": len(per_file_markdowns.get(fname, ""))
-            }
-            for fname, cls in classifications.items()
-        ]
-    }
-    manifest_path = listing_dir / "doc_manifest.json"
-    with open(manifest_path, 'w') as f:
-        json.dump(manifest, f, indent=2)
-    
-    logging.info(f"📋 Document classification:")
-    for f in manifest["files"]:
-        logging.info(f"   {f['category']:>12}  {f['filename']}  — {f['reasoning']}")
-    
-    # ... existing consolidation code (unchanged, for backward compat) ...
+    # 1) Build per-file previews:
+    #    - PDFs/MD: use file preview (e.g., first CLASSIFIER_LINES lines)
+    #    - Excels: only first CLASSIFIER_EXCEL_SHEET_LINES from each sheet in converted markdown
+    # 2) Classify each file -> one of 4 categories
+    # 3) Write doc_manifest.json (with filename, category, reasoning, source path, temp md path)
+    # 4) Copy source file + temp markdown into matching buckets:
+    #    buckets/<category>/source/<filename>
+    #    buckets/<category>/temp/<filename>.md
+    # 5) Return manifest path
 ```
 
 ### [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py) Changes
+
+Stage 3 runs extraction from manifest only. No fallback path.
 
 ```python
 AGENT_ROUTING = {
@@ -159,44 +157,34 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
     listing_dir = Path(markdown_path).parent
     manifest_path = listing_dir / "doc_manifest.json"
     
-    if manifest_path.exists():
-        # ── Routed mode ──
-        manifest = json.loads(manifest_path.read_text())
-        
-        per_file_markdowns = {}
-        for file_info in manifest["files"]:
-            fname = file_info["filename"]
-            stem = Path(fname).stem
-            ext = Path(fname).suffix.lower()
-            
-            if ext == ".md":
-                md_path = listing_dir / fname
-            else:
-                md_path = listing_dir / "temp" / f"{stem}.md"
-            
-            if md_path.exists():
-                per_file_markdowns[fname] = md_path.read_text()
-        
-        classifications = {
-            f["filename"]: f["category"]
-            for f in manifest["files"]
-        }
-        
-        # Build per-agent content
-        def build_content(agent_name):
-            allowed = AGENT_ROUTING[agent_name]
-            sections = []
-            for fname, content in per_file_markdowns.items():
-                if classifications.get(fname) in allowed:
-                    header = f"\n{'='*40}\nSOURCE FILE: {fname}\n{'='*40}\n\n"
-                    sections.append(header + content)
-            return "\n".join(sections)
-        
-        agent_contents = {name: build_content(name) for name in AGENT_ROUTING}
-    else:
-        # ── Legacy mode (no manifest) ──
-        full_content = Path(markdown_path).read_text()
-        agent_contents = {name: full_content for name in AGENT_ROUTING}
+    if not manifest_path.exists():
+        raise RuntimeError(
+            "doc_manifest.json not found. Run --stage classify before extract."
+        )
+    
+    manifest = json.loads(manifest_path.read_text())
+    
+    classifications = {f["filename"]: f["category"] for f in manifest["files"]}
+    per_file_markdowns = {}
+    for f in manifest["files"]:
+        fname = f["filename"]
+        stem = Path(fname).stem
+        bucket_md = listing_dir / "buckets" / f["category"] / "temp" / f"{stem}.md"
+        if not bucket_md.exists():
+            raise RuntimeError(f"Missing bucketed markdown for {fname}. Re-run --stage classify.")
+        per_file_markdowns[fname] = bucket_md.read_text()
+    
+    # Build per-agent content
+    def build_content(agent_name):
+        allowed = AGENT_ROUTING[agent_name]
+        sections = []
+        for fname, content in per_file_markdowns.items():
+            if classifications.get(fname) in allowed:
+                header = f"\n{'='*40}\nSOURCE FILE: {fname}\n{'='*40}\n\n"
+                sections.append(header + content)
+        return "\n".join(sections)
+    
+    agent_contents = {name: build_content(name) for name in AGENT_ROUTING}
     
     # Determine which agents to run
     all_agents = {
@@ -236,14 +224,16 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
 ### CLI
 
 ```bash
-# Full pipeline (classify + extract all 5 agents)
-uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ"
+# Full 3-stage pipeline (convert -> classify -> extract)
+uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage all
 
-# Re-run only one agent (uses existing manifest + existing JSON)
-uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --agent sponsor
+# Run from any stage
+uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage convert
+uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage classify
+uv run python orchestrate_pipeline.py "TierraMark-at-Camp-Verde-AZ" --stage extract
 
-# Re-classify only (without re-running OCR or extraction)
-uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --reclassify
+# Re-run one extraction agent (without re-running classify/extract)
+uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/tierramark_at_camp_verde_az_markdown.md" --stage extract --agent sponsor
 ```
 
 ---
@@ -252,7 +242,8 @@ uv run python run_modular_pipeline.py "listing-docs/TierraMark-at-Camp-Verde-AZ/
 
 1. **`src/config.py`** — Model names + classifier settings from `.env`
 2. **`src/agents/document_classifier.py`** — Classifier agent (small model, 4 categories)
-3. **Modify [process_listing.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/process_listing.py)** — Add classification step after OCR, save `doc_manifest.json`
-4. **Modify [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py)** — Add routing logic + `--agent` flag
-5. **Modify `orchestrate_pipeline.py`** — Pass manifest through pipeline phases
-6. **Test on TierraMark** — Most diverse file set, ideal validation
+3. **Keep `process_listing.py` as Stage 1 converter** — outputs markdown + consolidated markdown only.
+4. **Add `src/pipeline/classify_and_bucket.py`** — classifies each file, rebuilds `buckets/` on rerun, and writes `doc_manifest.json`.
+5. **Modify [run_modular_pipeline.py](file:///Users/aryanjain/Documents/OZL/oz-doc-processor/run_modular_pipeline.py)** — remove fallback mode, require manifest, read from bucketed markdown and add `--stage extract` + `--agent`.
+6. **Modify `orchestrate_pipeline.py`** — add stage flags (`convert`, `classify`, `extract`, `all`) and stage guards.
+7. **Test on TierraMark** — Most diverse file set, ideal validation for rerun and bucket rebuild behavior.

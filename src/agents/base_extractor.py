@@ -6,12 +6,13 @@ import os
 import logging
 from typing import Type, Any
 from pydantic import BaseModel
+from src.config import EXTRACTION_MODEL
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class BaseExtractor(ABC):
-    def __init__(self, model_name: str = "gemini-3-flash-preview"):
+    def __init__(self, model_name: str = EXTRACTION_MODEL):
         self.api_key = os.environ.get("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set.")

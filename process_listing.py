@@ -4,14 +4,39 @@ import logging
 import base64
 import sys
 from pathlib import Path
+from typing import List
 from mistral_ocr import ocr_with_mistral, parse_and_save_markdown
 from excel_processor import process_excel_to_markdown
 from dotenv import load_dotenv
+from src.config import PROCESSABLE_EXTS
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 import asyncio
+
+
+def get_listing_dir(listing_name: str) -> Path:
+    listing_dir = Path(f"listing-docs/{listing_name}")
+    if listing_dir.exists():
+        return listing_dir
+
+    parent = Path("listing-docs")
+    for candidate in parent.iterdir():
+        if candidate.is_dir() and candidate.name.lower() == listing_name.lower():
+            return candidate
+    raise FileNotFoundError(f"Listing directory not found: {listing_name}")
+
+
+def get_process_files(listing_dir: Path) -> List[Path]:
+    all_files = sorted(list(listing_dir.glob("*")))
+    return [
+        f for f in all_files
+        if f.is_file()
+        and f.suffix.lower() in PROCESSABLE_EXTS
+        and not f.name.endswith("_markdown.md")  # skip output file itself
+    ]
+
 
 def extract_images_from_ocr(json_path: str, output_dir: str):
     """
@@ -102,34 +127,14 @@ def extract_images_from_ocr(json_path: str, output_dir: str):
 
 async def process_listing(listing_name: str):
     """
-    Full pipeline for a listing: 
-    Iterates through ALL PDF and Excel files in the directory and 
-    consolidates them into one grand Markdown document.
+    Stage 1 conversion for a listing:
+    Converts source docs to markdown and writes a consolidated artifact.
     """
     # Convert listing name to capitalized for directory
-    listing_dir = Path(f"listing-docs/{listing_name}")
-    if not listing_dir.exists():
-        parent = Path("listing-docs")
-        found = False
-        for d in parent.iterdir():
-            if d.is_dir() and d.name.lower() == listing_name.lower():
-                listing_dir = d
-                listing_name = d.name
-                found = True
-                break
-        if not found:
-            logging.error(f"Listing directory {listing_dir} does not exist.")
-            return
+    listing_dir = get_listing_dir(listing_name)
+    listing_name = listing_dir.name
 
-    # Find relevant listing documents (.pdf, .xlsx, .xls, .md)
-    # .md files are included as supplemental context (e.g., sponsor emails, notes)
-    # but we exclude the consolidated output markdown itself
-    all_files = sorted(list(listing_dir.glob("*")))
-    process_files = [
-        f for f in all_files
-        if f.suffix.lower() in [".pdf", ".xlsx", ".xls", ".md"]
-        and not f.name.endswith("_markdown.md")  # skip the output file itself
-    ]
+    process_files = get_process_files(listing_dir)
     
     if not process_files:
         logging.error(f"No PDF or Excel files found in {listing_dir}")
