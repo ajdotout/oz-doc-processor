@@ -177,6 +177,33 @@ When deploying to Cloud Run, the following settings are recommended as a startin
 *   **Request Timeout:** 15-30 minutes
 *   **Concurrency:** 1 (Crucial for ensuring one batch of documents is processed at a time per instance)
 
+## Listing Pipeline (Local Runbook)
+
+The local extraction flow is a strict three-stage pipeline:
+
+- Stage 1: convert
+- Stage 2: classify
+- Stage 3: extract
+
+From `oz-doc-processor/`, run:
+
+- Full pipeline:
+  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL"`
+- Convert only:
+  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage convert`
+- Classify only:
+  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage classify`
+- Extract only:
+  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract`
+- Single-agent rerun:
+  - `uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial`
+
+Notes:
+- `--agent` is only valid with `--stage extract`.
+- Stage 3 requires `doc_manifest.json`.
+- Stage 2 requires converted markdown artifacts from Stage 1.
+- Final JSON filenames include `EXTRACTION_MODEL` (for example: `lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`).
+
 ## API Integration Examples
 
 ### Mistral OCR API

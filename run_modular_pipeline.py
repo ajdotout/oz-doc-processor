@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 from pathlib import Path
+import re
 from dotenv import load_dotenv
 import argparse
 
@@ -17,6 +18,7 @@ from src.agents.agents import (
     MarketAgent,
     SponsorAgent
 )
+from src.config import EXTRACTION_MODEL
 
 AGENT_ROUTING = {
     "overview": {"om", "supplemental"},
@@ -58,6 +60,21 @@ def to_dict(obj):
 
 def to_block(type_name, data):
     return {"type": type_name, "data": to_dict(data)}
+
+
+def _model_filename_suffix(model_name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9_.-]+", "_", model_name.strip())
+    return sanitized or "unknown-model"
+
+
+def _listing_output_path(markdown_path: str) -> str:
+    output_dir = os.path.dirname(markdown_path)
+    base_name = os.path.splitext(os.path.basename(markdown_path))[0]
+    model_name = os.getenv("EXTRACTION_MODEL", EXTRACTION_MODEL)
+    return os.path.join(
+        output_dir,
+        f"{base_name}_modular_listing_{_model_filename_suffix(model_name)}.json"
+    )
 
 
 def build_detail_page(title, subtitle, sections_data):
@@ -159,11 +176,9 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
 
     # If running a single agent, merge into the existing modular JSON to keep other agents untouched.
     existing_output_path = None
-    output_dir = os.path.dirname(markdown_path)
-    base_name = os.path.splitext(os.path.basename(markdown_path))[0]
-    output_path = os.path.join(output_dir, f"{base_name}_modular_listing_gemini3.json")
-    if agent_filter and os.path.exists(output_path):
-        existing_output_path = output_path
+    desired_output_path = _listing_output_path(markdown_path)
+    if agent_filter and os.path.exists(desired_output_path):
+        existing_output_path = desired_output_path
 
     if agent_filter and not existing_output_path:
         logging.error("Single-agent extract requires existing output file to merge with.")
@@ -297,9 +312,7 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None):
             )
 
     # Ensure output directory exists.
-    output_dir = os.path.dirname(markdown_path)
-    base_name = os.path.splitext(os.path.basename(markdown_path))[0]
-    output_path = os.path.join(output_dir, f"{base_name}_modular_listing_gemini3.json")
+    output_path = _listing_output_path(markdown_path)
 
     with open(output_path, 'w') as f:
         json.dump(final_listing, f, indent=2)

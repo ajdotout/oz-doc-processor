@@ -1,184 +1,178 @@
 ---
 name: listing-doc-pipeline
-description: Use this skill when running or debugging the Dock Extraction and Dock Processing pipeline for any listing in the oz-doc-processor repository. Covers the full flow from raw PDFs/Excels → OCR → Markdown consolidation → AI agent extraction → final listing JSON output.
+description: Use this skill when running or debugging the staged oz-doc-processor pipeline for any listing in the oz-doc-processor repository. Covers convert -> classify -> extract, plus single-agent re-runs.
 ---
 
-# Listing Doc Pipeline (Dock Extraction & Dock Processing)
+# Listing Document Pipeline Skill
 
-This skill describes the **full two-phase pipeline** for processing OZ investment listing documents into structured JSON data. All scripts live in the root of `oz-doc-processor/` and operate on folders inside `listing-docs/`.
+This skill documents the current **three-stage pipeline** in `oz-doc-processor/`:
 
-> **Prerequisite**: Always follow the `uv-management` skill when running any Python scripts in this repo. Use `uv run python <script>` — never bare `python`.
+1. Convert source documents to markdown artifacts.
+2. Classify each source file and copy assets into category buckets.
+3. Run extraction agents to produce final listing JSON.
+
+All scripts operate on directories under `listing-docs/`.
+
+> **Prerequisite**: Always use the `uv-management` skill when running Python in this repo. Use `uv run python <script>`.
 
 ---
 
 ## Repository Layout
 
-```
+```text
 oz-doc-processor/
-├── listing-docs/                     # One sub-folder per property
-│   ├── 491-Baltic-Brooklyn-NY/       # Raw PDFs/Excels go here
-│   ├── Lakewire-Lakeland-FL/         # Mixed: PDF + Excel supported
-│   └── <other-properties>/
-│
-├── orchestrate_pipeline.py           # ⭐ MAIN ENTRY POINT (runs both phases)
-├── process_listing.py                # Phase 1 — Extraction (OCR + Excel → Markdown)
-├── run_modular_pipeline.py           # Phase 2 — Processing (Markdown → JSON via AI agents)
-├── mistral_ocr.py                    # OCR engine (Mistral API)
-├── excel_processor.py                # Excel → Markdown converter
-├── run_area_summary_ocr.py           # One-off OCR for supplemental area-summary docs
-│
-└── src/
-    ├── agents/
-    │   ├── base_extractor.py         # Base agent class (pydantic-ai + Gemini model)
-    │   └── agents.py                 # 5 specialized agents: Overview, Financial, Property, Market, Sponsor
-    └── prompts/
-        ├── overview.py
-        ├── financial.py
-        ├── property.py
-        ├── market.py
-        └── sponsor.py
+├── listing-docs/                       # One folder per listing
+│   ├── 491-Baltic-Brooklyn-NY/
+│   ├── Lakewire-Lakeland-FL/
+│   └── <other-listings>/
+├── orchestrate_pipeline.py               # Main staged orchestrator
+├── process_listing.py                    # Stage 1 conversion
+├── src/pipeline/classify_and_bucket.py   # Stage 2 classification + buckets
+├── run_modular_pipeline.py               # Stage 3 extraction
+├── mistral_ocr.py                        # PDF OCR
+├── excel_processor.py                    # Excel → Markdown
+├── run_area_summary_ocr.py               # One-off OCR helper
+├── src/
+│   ├── config.py                         # Centralized env settings
+│   ├── agents/
+│   │   ├── document_classifier.py        # Classifier agent
+│   │   ├── base_extractor.py
+│   │   └── agents.py                     # Overview, Financial, Property, Market, Sponsor
+│   └── pipeline/
+│       └── classify_and_bucket.py        # Stage 2 implementation
 ```
 
 ---
 
-## Phase 1 — Dock Extraction (`process_listing.py`)
-
-Converts **all PDFs and Excel files** in the listing folder into a single consolidated Markdown file.
+## Stage 1 — Convert (`--stage convert`)
 
 ### What it does
-1. Scans `listing-docs/<ListingName>/` for all `.pdf`, `.xlsx`, `.xls` files.
-2. For each **PDF**: uploads to Mistral OCR API → saves raw JSON to `temp/` → parses to Markdown → extracts embedded images into `images/<stem>/`.
-3. For each **Excel**: converts all sheets to Markdown tables using pandas.
-4. Concatenates everything (with `SOURCE FILE:` headers) into one grand `<listing_name>_markdown.md`.
+- Scans `listing-docs/<ListingFolder>/` for processable files: `.pdf`, `.xlsx`, `.xls`, `.md`.
+- PDF: runs Mistral OCR, stores raw OCR JSON, converts OCR output to markdown.
+- Excel: converts all sheets to markdown tables via pandas.
+- Markdown: reads supplemental markdown directly.
+- Writes consolidated markdown with per-file `SOURCE FILE:` headers.
 
-### Output artifacts (all inside the listing folder)
-| Artifact | Description |
-|---|---|
-| `<name>_markdown.md` | Grand consolidated Markdown (input to Phase 2) |
-| `temp/<stem>_ocr.json` | Raw Mistral OCR JSON per PDF |
-| `temp/<stem>.md` | Per-file intermediate Markdown |
-| `images/<stem>/` | Extracted images from each PDF |
-| `images/<stem>/image_descriptions.json` | Bounding-box + annotation metadata for images |
+### Stage 1 artifacts
+- `temp/<stem>_ocr.json` (PDF OCR JSON)
+- `temp/<stem>.md` (per-file markdown)
+- `images/<stem>/` and `images/<stem>/image_descriptions.json`
+- `<listing_name>_markdown.md` consolidated markdown
 
-### API keys required
-- `MISTRAL_API_KEY` — for OCR (PDF only)
+### Run Stage 1
+
+```bash
+uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage convert
+```
+
+Direct run:
+
+```bash
+uv run python process_listing.py "Lakewire-Lakeland-FL"
+```
 
 ---
 
-## Phase 2 — Dock Processing (`run_modular_pipeline.py`)
-
-Runs **5 specialized AI agents in parallel** on the consolidated Markdown to produce a structured listing JSON.
+## Stage 2 — Classify + Bucket (`--stage classify`)
 
 ### What it does
-1. Reads the `<name>_markdown.md` produced by Phase 1.
-2. Spins up 5 pydantic-ai agents (each backed by `gemini-3-flash-preview`):
-   - **OverviewAgent** → hero, ticker metrics, compelling reasons, executive summary, investment cards
-   - **FinancialAgent** → projections, capital stack, distribution timeline, tax benefits, waterfall
-   - **PropertyAgent** → key facts, amenities, unit mix, location highlights, development timeline/phases
-   - **MarketAgent** → market metrics, employers, demographics, key drivers, supply/demand, competitive analysis
-   - **SponsorAgent** → intro, partnership, track record, leadership team, key partners, advantages, portfolio, fund structure
-3. Assembles all outputs into a single `<name>_modular_listing_gemini3.json`.
+- Builds file previews for classification:
+  - PDF/MD: first lines from converted text
+  - Excel: first 10 lines per sheet section (configurable with `CLASSIFIER_EXCEL_SHEET_LINES`)
+- Classifies each processable file into one category:
+  - `om`
+  - `proforma`
+  - `research`
+  - `supplemental`
+- Clears and regenerates buckets on each run.
+- Copies both source + converted markdown into:
+  - `buckets/<category>/source/`
+  - `buckets/<category>/temp/`
+- Writes `doc_manifest.json` with deterministic metadata.
 
-### Output artifact
-| Artifact | Description |
-|---|---|
-| `<name>_modular_listing_gemini3.json` | Final structured listing JSON (used by oz-homepage) |
+### Stage 2 output example paths
+- `doc_manifest.json`
+- `buckets/om/source/...`
+- `buckets/om/temp/...`
+- `buckets/proforma/source/...`
+- `buckets/proforma/temp/...`
+- `buckets/research/source/...`
+- `buckets/research/temp/...`
+- `buckets/supplemental/source/...`
+- `buckets/supplemental/temp/...`
 
-### API keys required
-- `GEMINI_API_KEY` — for all 5 AI extraction agents
+### Run Stage 2
+
+```bash
+uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage classify
+```
 
 ---
 
-## Running the Full Pipeline
+## Stage 3 — Extract (`--stage extract`)
 
-The canonical entry point is `orchestrate_pipeline.py`, which chains Phase 1 → Phase 2 automatically.
+### What it does
+- Requires `doc_manifest.json` (strict fail if missing).
+- Reads per-file markdown from bucketed paths in the manifest.
+- Renders 5 extraction agents:
+  - `overview`
+  - `financial`
+  - `property`
+  - `market`
+  - `sponsor`
+- Outputs final JSON with model name in filename:
+  - `<listing_name>_modular_listing_<EXTRACTION_MODEL_SANITIZED>.json`
+  - example: `lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`
 
-### Most common command (full pipeline)
+### Run full extract
+
 ```bash
-# From the oz-doc-processor root directory
-uv run python orchestrate_pipeline.py "<ListingFolderName>"
+uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract
 ```
 
-### Examples for specific properties
+### Single agent rerun
 
-**491 Baltic Brooklyn NY:**
 ```bash
-uv run python orchestrate_pipeline.py "491-Baltic-Brooklyn-NY"
+uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL" --stage extract --agent financial
 ```
 
-**Lakewire Lakeland FL:**
+Direct extraction run (markdown path):
+
+```bash
+uv run python run_modular_pipeline.py "listing-docs/Lakewire-Lakeland-FL/lakewire_lakeland_fl_markdown.md" --agent overview
+```
+
+---
+
+## Run all stages
+
 ```bash
 uv run python orchestrate_pipeline.py "Lakewire-Lakeland-FL"
 ```
 
-> **Note**: The listing name must match the folder name inside `listing-docs/`. The script does case-insensitive matching, but exact folder name is safest.
+Equivalent to `--stage all`.
 
 ---
 
-## Running Phases Individually
+## Environment Variables (`.env`)
 
-### Phase 1 only (Extraction)
-```bash
-uv run python process_listing.py "491-Baltic-Brooklyn-NY"
-```
-This generates the consolidated markdown but does NOT run AI agents. Use this to:
-- Verify OCR output before spending Gemini API credits
-- Re-run extraction if source documents change
+Required:
 
-### Phase 2 only (Processing — requires Markdown already generated)
-```bash
-uv run python run_modular_pipeline.py "listing-docs/491-Baltic-Brooklyn-NY/491_baltic_brooklyn_ny_markdown.md"
-```
-Pass the **full path to the markdown file** as the argument.
+- `GEMINI_API_KEY`
+- `MISTRAL_API_KEY`
 
-### Re-running OCR on a supplemental document (one-off)
-Edit `run_area_summary_ocr.py` to point to the correct listing and PDF, then:
-```bash
-uv run python run_area_summary_ocr.py
-```
+Optional / pipeline behavior:
 
----
-
-## Adding a New Listing
-
-1. **Create the listing folder** inside `listing-docs/`:
-   ```
-   listing-docs/<Property-Name-Kebab-Case>/
-   ```
-2. **Drop raw documents** into the folder:
-   - PDFs (Offering Memorandums, area summaries, etc.)
-   - Excel files (HUD data, financial models, etc.)
-   - **Supplemental `.md` files** (e.g., `EmailInfo.md` with sponsor email context, notes) — read directly, no OCR needed
-   - Note: The pipeline auto-excludes the consolidated `*_markdown.md` output file to avoid circular inclusion
-3. **Run the pipeline**:
-   ```bash
-   uv run python orchestrate_pipeline.py "<Property-Name-Kebab-Case>"
-   ```
+- `CLASSIFIER_MODEL`
+- `CLASSIFIER_LINES` (default `100`)
+- `CLASSIFIER_EXCEL_SHEET_LINES` (default `10`)
+- `EXTRACTION_MODEL` (default `gemini-3-flash-preview`)
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely Cause | Fix |
-|---|---|---|
-| `GEMINI_API_KEY not found` | `.env` not loaded or missing key | Ensure `.env` exists in oz-doc-processor root with `GEMINI_API_KEY=...` |
-| `MISTRAL_API_KEY not set` | Missing API key for OCR | Add `MISTRAL_API_KEY=...` to `.env` |
-| `Listing directory does not exist` | Folder name mismatch | Check exact folder name inside `listing-docs/`; casing is matched case-insensitively |
-| OCR JSON already exists but re-run needed | Stale temp files | Delete `temp/*.json` files in the listing folder before re-running |
-| Agent extraction fails for one domain | Gemini model error or malformed markdown | Check the markdown quality first; re-run Phase 1 if needed |
-| File not processed | Only `.pdf`, `.xlsx`, `.xls` files are scanned | Rename/convert supplemental docs accordingly |
-
----
-
-## Environment Variables (`.env` in repo root)
-
-```env
-GEMINI_API_KEY=...       # Required for Phase 2 (AI extraction agents)
-MISTRAL_API_KEY=...      # Required for Phase 1 (PDF OCR)
-```
-
-Optional / unused by core pipeline:
-```
-CENSUS_API_KEY, BLS_API_KEY, FRED_API_KEY, GOOGLE_MAPS_API_KEY, etc.
-```
-(These are used by `address_data_fetcher.py` for supplemental data enrichment, not the listing doc pipeline.)
+- `doc_manifest.json not found`: run Stage 2 first.
+- `Missing converted markdown`: rerun Stage 1.
+- `Single-agent extract requires existing output`: rerun full extract first for that model.
+- `Listing directory does not exist`: check folder name under `listing-docs/`.
