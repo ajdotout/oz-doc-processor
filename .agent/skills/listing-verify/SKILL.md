@@ -11,7 +11,7 @@ This skill outlines the process for auditing and verifying the structured JSON d
 
 The processing pipeline (described in the `listing-doc-pipeline` skill) consists of:
 1. **Extraction (Phase 1):** Raw documents (PDF, Excel) -> OCR/Parsing -> Consolidated Markdown (`<listing>_markdown.md`).
-2. **Processing (Phase 2):** Consolidated Markdown -> AI Agents -> Final JSON (`<listing>_modular_listing_gemini3.json`).
+2. **Processing (Phase 2):** Consolidated Markdown -> AI Agents -> Final JSON (`<listing>_gemini3.json`).
 
 The goal of this deep dive is to trace the flow backwards: `Final JSON` -> `Consolidated Markdown` -> `Raw Docs / temp OCR` to confirm exact correctness.
 
@@ -23,7 +23,7 @@ The goal of this deep dive is to trace the flow backwards: `Final JSON` -> `Cons
 Navigate to the specific listing directory inside `listing-docs/<ListingName>/` (e.g., `491-Baltic-Brooklyn-NY` or `Lakewire-Lakeland-FL`).
 
 You will need to locate and reference:
-1. **The Final Output:** `<listing_name>_modular_listing_gemini3.json`
+1. **The Final Output:** `<listing_name>_gemini3.json`
 2. **The Intermediate Source:** `<listing_name>_markdown.md`
 3. **The Metadata/OCR Backup:** Files inside the `temp/` folder (e.g., `<doc_name>_ocr.json`) and any raw supplemental `.md` files in the listing root.
 

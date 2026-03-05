@@ -96,7 +96,7 @@ def _listing_output_path(markdown_path: str) -> str:
     model_name = os.getenv("EXTRACTION_MODEL", EXTRACTION_MODEL)
     return os.path.join(
         str(output_dir),
-        f"{base_name}_modular_listing_{_model_filename_suffix(model_name)}.json"
+        f"{base_name}_{_model_filename_suffix(model_name)}.json"
     )
 
 

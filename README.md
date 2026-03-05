@@ -210,8 +210,8 @@ Notes:
   Full consolidated listing JSON is written only when Stage 3 runs without `--agent`.
 - `--no-cache` only controls whether cached agent outputs are reused. Successful outputs are still written for selected agents.
 - Final consolidated listing JSON is written to:
-  - `listing-docs/<Listing>/outputs/<listing>_modular_listing_<EXTRACTION_MODEL_SANITIZED>.json`
-  - example: `listing-docs/Lakewire-Lakeland-FL/outputs/lakewire_lakeland_fl_markdown_modular_listing_gemini-3-flash-preview.json`
+  - `listing-docs/<Listing>/outputs/<listing>_<EXTRACTION_MODEL_SANITIZED>.json`
+  - example: `listing-docs/Lakewire-Lakeland-FL/outputs/lakewire_lakeland_fl_markdown_gemini-3-flash-preview.json`
 
 ## API Integration Examples
 
