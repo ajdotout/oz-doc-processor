@@ -61,14 +61,10 @@ def load_environment():
         logging.info(f"Available keys: {[k for k in os.environ.keys() if 'API' in k or 'GEMINI' in k]}")
         sys.exit(1)
 
-def _run_agent_sync(agent_cls, content):
+async def run_agent_async(agent_cls, content):
+    """Runs one agent on the current event loop (concurrent execution, no threads)."""
     agent = agent_cls()
-    return agent.run(content)
-
-
-async def run_agent_in_thread(agent_cls, content):
-    """Runs a blocking agent inside a separate thread."""
-    return await asyncio.to_thread(_run_agent_sync, agent_cls, content)
+    return await agent.run_async(content)
 
 
 def to_dict(obj):
@@ -218,7 +214,7 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None, no_cache: b
                     logging.warning(f"Cached output for {name} could not be loaded: {exc}")
 
         try:
-            task = run_agent_in_thread(agents_to_run[name], content)
+            task = run_agent_async(agents_to_run[name], content)
             run_tasks.append(task)
             run_task_meta.append((name, prompt_signature, input_signature))
         except Exception as exc:
@@ -226,7 +222,7 @@ async def run_pipeline(markdown_path: str, agent_filter: str = None, no_cache: b
             failed_agents.append(name)
 
     if run_tasks:
-        logging.info("Running agents in parallel...")
+        logging.info("Running agents concurrently...")
         results = await asyncio.gather(*run_tasks, return_exceptions=True)
         for idx, res in enumerate(results):
             name, prompt_signature, input_signature = run_task_meta[idx]

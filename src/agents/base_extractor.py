@@ -47,3 +47,18 @@ class BaseExtractor(ABC):
         except Exception as e:
             logging.error(f"Extraction failed for {self.__class__.__name__}: {e}")
             raise e
+
+    async def run_async(self, markdown_content: str) -> BaseModel:
+        """Runs the extraction agent asynchronously on the current event loop (concurrent, no threads)."""
+        logging.info(f"Starting extraction with {self.__class__.__name__}...")
+        prompt = f"Extract data from the following document:\n\n{markdown_content}"
+        try:
+            async with self.agent.iter(prompt) as agent_run:
+                async for _ in agent_run:
+                    pass
+            out = agent_run.result.output
+            logging.info(f"Extraction successful for {self.__class__.__name__}.")
+            return out
+        except Exception as e:
+            logging.error(f"Extraction failed for {self.__class__.__name__}: {e}")
+            raise
