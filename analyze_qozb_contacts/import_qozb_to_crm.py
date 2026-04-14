@@ -8,7 +8,7 @@ Tables populated:
   • organizations       – one per unique entity name, dedup on name (exact)
   • phones              – one per unique normalized phone number
   • emails              – one per unique email address (Owner only)
-  • people              – deduped on (phone, normalized_name)
+  • people              – match existing CRM by email then phone+name; else dedupe within file by (phone, normalized_name)
   • person_phones       – person ↔ phone junction
   • person_emails       – person ↔ email junction (Owner only)
   • person_organizations    – person ↔ org junction (with title = role)
@@ -16,13 +16,13 @@ Tables populated:
   • property_phones         – orphan property-level phones ↔ property junction
   • property_organizations  – direct property ↔ org junction (with role)
 
-Tags applied to all imported people: ['qozb_property_contact']
+Default tags: ['qozb_property_contact']. Override with --people-tags (comma-separated).
 
 Usage:
   uv run analyze_qozb_contacts/import_qozb_to_crm.py
   uv run analyze_qozb_contacts/import_qozb_to_crm.py --dry-run
   uv run analyze_qozb_contacts/import_qozb_to_crm.py --limit 100
-  uv run analyze_qozb_contacts/import_qozb_to_crm.py --dry-run --limit 500
+  uv run analyze_qozb_contacts/import_qozb_to_crm.py --csv-path /path/to.csv --people-tags pre_c_of_o_list --import-source pre_c_of_o_import
 
 Environment variables required (in oz-doc-processor/.env):
   SUPABASE_URL              – e.g. https://xxxx.supabase.co
@@ -35,7 +35,9 @@ import sys
 import json
 import argparse
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, Union
+
+PersonTarget = tuple[str, Union[int, str]]  # ("new", idx) or ("existing", person_uuid)
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -49,8 +51,6 @@ from rich.panel import Panel
 CSV_PATH = "/Users/aryanjain/Documents/OZL/UsefulDocs/QOZB-Contacts/All QOZB Development Projects USA - 20260126.xlsx - Results.csv"
 
 BATCH_SIZE = 500  # rows per Supabase upsert call
-
-PEOPLE_TAGS = ["qozb_property_contact"]
 
 # Entity name strings that are placeholders, not real organizations.
 # Never create an organizations record for these.
@@ -168,9 +168,124 @@ def batch(lst: list, n: int):
     for i in range(0, len(lst), n):
         yield lst[i : i + n]
 
+
+def merge_tags(existing: list, new_tags: list) -> list:
+    """Union two tag lists, preserving order (same as contact_merge_scripts)."""
+    seen = set(existing or [])
+    result = list(existing or [])
+    for t in (new_tags or []):
+        if t and t not in seen:
+            result.append(t)
+            seen.add(t)
+    return result
+
+
+def fetch_all(supabase, table: str, select: str = "*", page_size: int = 1000) -> list[dict]:
+    """Paginate through an entire table."""
+    all_rows = []
+    offset = 0
+    while True:
+        result = (
+            supabase.table(table)
+            .select(select)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        rows = result.data
+        all_rows.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    return all_rows
+
+
+def fetch_crm_person_lookups(supabase):
+    """
+    Build maps to match CSV slots to existing CRM people:
+      - email (lowercase) -> person_id (first person linked to that email)
+      - (phone_digits, normalized_name) -> person_id
+      - person_id -> current tags (for merge)
+    """
+    emails_rows = fetch_all(supabase, "emails", "id,address")
+    address_to_email_id = {}
+    for e in emails_rows:
+        addr = (e.get("address") or "").strip().lower()
+        if addr:
+            address_to_email_id[addr] = e["id"]
+
+    person_emails_rows = fetch_all(supabase, "person_emails", "person_id,email_id")
+    email_id_to_person = {}
+    for pe in person_emails_rows:
+        eid = pe["email_id"]
+        if eid not in email_id_to_person:
+            email_id_to_person[eid] = pe["person_id"]
+
+    email_to_person = {}
+    for addr, eid in address_to_email_id.items():
+        pid = email_id_to_person.get(eid)
+        if pid:
+            email_to_person[addr] = pid
+
+    phones_rows = fetch_all(supabase, "phones", "id,number")
+    phone_id_to_number = {p["id"]: p["number"] for p in phones_rows if p.get("number")}
+
+    people_rows = fetch_all(supabase, "people", "id,first_name,last_name,tags")
+    person_tags = {p["id"]: (p.get("tags") or []) for p in people_rows}
+    person_by_id = {p["id"]: p for p in people_rows}
+
+    phone_name_to_person = {}
+    person_phones_rows = fetch_all(supabase, "person_phones", "person_id,phone_id")
+    for pp in person_phones_rows:
+        pid = pp["person_id"]
+        num = phone_id_to_number.get(pp["phone_id"])
+        if not num:
+            continue
+        p = person_by_id.get(pid)
+        if not p:
+            continue
+        nl = normalize_name(p.get("first_name"), p.get("last_name"))
+        if nl:
+            key = (num, nl)
+            if key not in phone_name_to_person:
+                phone_name_to_person[key] = pid
+
+    console.print(
+        f"  [dim]CRM lookup: {len(email_to_person):,} emails → person, "
+        f"{len(phone_name_to_person):,} phone+name keys[/dim]"
+    )
+    return {
+        "email_to_person": email_to_person,
+        "phone_name_to_person": phone_name_to_person,
+        "person_tags": person_tags,
+    }
+
+
+def merge_property_details_rows(existing_details: Optional[dict], incoming_details: dict) -> dict:
+    """Preserve existing property JSON fields; add/override only with incoming non-empty values where sensible."""
+    old = existing_details if isinstance(existing_details, dict) else {}
+    inc = incoming_details if isinstance(incoming_details, dict) else {}
+    # Existing keys win on conflict so prior imports (e.g. QOZB) are not wiped.
+    return {**inc, **old}
+
+
+def apply_existing_property_details_merge(supabase, unique_properties: dict) -> None:
+    """Mutate unique_properties in place: merge DB details for same (property_name, address)."""
+    keys = set(unique_properties.keys())
+    if not keys:
+        return
+    rows = fetch_all(supabase, "properties", "property_name,address,details")
+    existing_by_key = {}
+    for row in rows:
+        k = (row.get("property_name"), row.get("address") or "")
+        if k in keys:
+            existing_by_key[k] = row.get("details")
+    for k, rec in unique_properties.items():
+        if k in existing_by_key:
+            rec["details"] = merge_property_details_rows(existing_by_key[k], rec.get("details") or {})
+
 # ─── Phase 1: First pass — collect unique entities ─────────────────────────────
 
-def phase1_collect(df: pd.DataFrame, limit: Optional[int]):
+def phase1_collect(df: pd.DataFrame, limit: Optional[int], import_source: str):
     """
     Single pass through CSV rows. Collects:
       - unique_phones:       dict[number] = phone_data
@@ -218,7 +333,7 @@ def phase1_collect(df: pd.DataFrame, limit: Optional[int]):
                     "state":         clean_str(row.get("State")),
                     "zip":           clean_str(row.get("ZIP")),
                     "details": {
-                        "source":                   "qozb_import",
+                        "source":                   import_source,
                         "qozb_property_id":         clean_str(row.get("PropertyID")),
                         "market":                   clean_str(row.get("Market")),
                         "submarket":                clean_str(row.get("Submarket")),
@@ -370,6 +485,8 @@ def phase2_upsert_entities(supabase, unique_phones, unique_emails, unique_orgs, 
         console.print("[yellow]DRY RUN: skipping database writes[/yellow]")
         return {}, {}, {}, {}
 
+    apply_existing_property_details_merge(supabase, unique_properties)
+
     phone_id_map    = upsert_batch(supabase, "phones",        list(unique_phones.values()),    "number",                "phones")
     email_id_map    = upsert_batch(supabase, "emails",        list(unique_emails.values()),    "address",               "emails")
     org_id_map      = upsert_batch(supabase, "organizations", list(unique_orgs.values()),      "name",                  "organizations")
@@ -380,26 +497,40 @@ def phase2_upsert_entities(supabase, unique_phones, unique_emails, unique_orgs, 
 
 # ─── Phase 3: Resolve people + collect junction records ─────────────────────────
 
-def phase3_resolve_people(contact_slots, phone_id_map, email_id_map, org_id_map, property_id_map, dry_run: bool):
+def phase3_resolve_people(
+    contact_slots,
+    phone_id_map,
+    email_id_map,
+    org_id_map,
+    property_id_map,
+    dry_run: bool,
+    people_tags: list[str],
+    import_source: str,
+    crm_lookups: Optional[dict],
+):
     """
-    Walk all contact slots. Dedup people by (phone, normalized_name).
+    Walk all contact slots. Match to existing CRM people (email, then phone+name),
+    else dedupe new rows by (phone, normalized_name) within this file.
     Returns:
       - people_to_insert:  list of dicts to INSERT into `people`
-      - people_key_map:    people_key → people_list_index
-      - junction_records:  dict of table → list of (person_idx, record_dict)
-            person_idx is an index into people_to_insert (resolved to UUID in Phase 4)
+      - existing_tag_updates: person_id -> merged tags for CRM rows touched
+      - junction_records:  each list holds (PersonTarget, record_dict)
     """
     people_to_insert: list[dict] = []
-    people_key_map:   dict[tuple, int] = {}   # (phone, name_lower) → index
+    people_key_map: dict[tuple, int] = {}   # (phone, name_lower) → index into people_to_insert
 
-    # Junction collection: list of (person_list_index, record_dict_WITHOUT_person_id)
-    j_person_phones:  list[tuple[int, dict]] = []
-    j_person_emails:  list[tuple[int, dict]] = []
-    j_person_orgs:    list[tuple[int, dict]] = []
-    j_person_props:   list[tuple[int, dict]] = []
-    j_property_phones: list[dict] = []   # these don't need person_id
+    j_person_phones: list[tuple[PersonTarget, dict]] = []
+    j_person_emails: list[tuple[PersonTarget, dict]] = []
+    j_person_orgs: list[tuple[PersonTarget, dict]] = []
+    j_person_props: list[tuple[PersonTarget, dict]] = []
 
-    stats = {"new_people": 0, "reused_people": 0, "skipped_nameless": 0}
+    stats = {
+        "new_people": 0,
+        "reused_in_file": 0,
+        "matched_crm": 0,
+        "skipped_nameless": 0,
+    }
+    crm_touched: set[str] = set()
 
     with Progress(
         SpinnerColumn(),
@@ -414,129 +545,180 @@ def phase3_resolve_people(contact_slots, phone_id_map, email_id_map, org_id_map,
             progress.advance(task)
 
             first = slot["first_name"]
-            last  = slot["last_name"]
+            last = slot["last_name"]
             phone = slot["phone"]
             email = slot["email"]
-            role  = slot["role"]
+            role = slot["role"]
             entity_name = slot["entity_name"]
-            prop_key    = slot["prop_key"]
+            prop_key = slot["prop_key"]
 
             name_lower = normalize_name(first, last)
 
-            # ── Skip if no name (phone-only slots handled via property_phones) ──
             if not name_lower:
                 stats["skipped_nameless"] += 1
                 continue
 
-            # ── Resolve or create person ─────────────────────────────────
-            people_key = (phone, name_lower) if phone else None
+            existing_pid = None
+            if crm_lookups:
+                if email:
+                    existing_pid = crm_lookups["email_to_person"].get(email)
+                if not existing_pid and phone:
+                    existing_pid = crm_lookups["phone_name_to_person"].get((phone, name_lower))
 
-            if people_key and people_key in people_key_map:
-                person_idx = people_key_map[people_key]
-                stats["reused_people"] += 1
+            if existing_pid:
+                person_target: PersonTarget = ("existing", existing_pid)
+                stats["matched_crm"] += 1
+                crm_touched.add(existing_pid)
             else:
-                person_idx = len(people_to_insert)
-                people_to_insert.append({
-                    "first_name": first or "",
-                    "last_name":  last or "",
-                    "lead_status": "new",
-                    "tags": PEOPLE_TAGS,
-                    "details": {"source": "qozb_import"},
-                })
-                if people_key:
-                    people_key_map[people_key] = person_idx
-                stats["new_people"] += 1
+                people_key = (phone, name_lower) if phone else None
+                if people_key and people_key in people_key_map:
+                    person_target = ("new", people_key_map[people_key])
+                    stats["reused_in_file"] += 1
+                else:
+                    idx = len(people_to_insert)
+                    people_to_insert.append({
+                        "first_name": first or "",
+                        "last_name": last or "",
+                        "lead_status": "new",
+                        "tags": people_tags,
+                        "details": {"source": import_source},
+                    })
+                    if people_key:
+                        people_key_map[people_key] = idx
+                    person_target = ("new", idx)
+                    stats["new_people"] += 1
 
-            # ── Junction: person_phones ──────────────────────────────────
             if phone and (not dry_run):
                 phone_id = phone_id_map.get(phone)
                 if phone_id:
-                    j_person_phones.append((person_idx, {
+                    j_person_phones.append((person_target, {
                         "phone_id": phone_id,
-                        "label":    "work",
+                        "label": "work",
                         "is_primary": True,
-                        "source":   "qozb_import",
+                        "source": import_source,
                     }))
 
-            # ── Junction: person_emails ──────────────────────────────────
             if email and (not dry_run):
                 email_id = email_id_map.get(email)
                 if email_id:
-                    j_person_emails.append((person_idx, {
-                        "email_id":  email_id,
-                        "label":     "work",
+                    j_person_emails.append((person_target, {
+                        "email_id": email_id,
+                        "label": "work",
                         "is_primary": True,
-                        "source":    "qozb_import",
+                        "source": import_source,
                     }))
 
-            # ── Junction: person_organizations ───────────────────────────
             if entity_name and (not dry_run):
                 org_id = org_id_map.get(entity_name)
                 if org_id:
-                    j_person_orgs.append((person_idx, {
+                    j_person_orgs.append((person_target, {
                         "organization_id": org_id,
-                        "title":           role,
-                        "is_primary":      False,
+                        "title": role,
+                        "is_primary": False,
                     }))
 
-            # ── Junction: person_properties ──────────────────────────────
             if not dry_run:
                 prop_id = property_id_map.get(prop_key)
                 if prop_id:
-                    j_person_props.append((person_idx, {
+                    j_person_props.append((person_target, {
                         "property_id": prop_id,
-                        "role":        role,
+                        "role": role,
                     }))
 
-    console.print(f"  [dim]New people to insert: {stats['new_people']:,}[/dim]")
-    console.print(f"  [dim]Reused (deduped):     {stats['reused_people']:,}[/dim]")
-    console.print(f"  [dim]Nameless slots skipped: {stats['skipped_nameless']:,}[/dim]")
+    existing_tag_updates: dict[str, list] = {}
+    if crm_lookups and crm_touched:
+        for pid in crm_touched:
+            old = crm_lookups["person_tags"].get(pid, [])
+            merged = merge_tags(old, people_tags)
+            if merged != old:
+                existing_tag_updates[pid] = merged
 
-    return people_to_insert, people_key_map, {
-        "person_phones":  j_person_phones,
-        "person_emails":  j_person_emails,
-        "person_orgs":    j_person_orgs,
-        "person_props":   j_person_props,
+    console.print(f"  [dim]New people to insert: {stats['new_people']:,}[/dim]")
+    console.print(f"  [dim]Matched existing CRM: {stats['matched_crm']:,}[/dim]")
+    console.print(f"  [dim]Reused within file:   {stats['reused_in_file']:,}[/dim]")
+    console.print(f"  [dim]Nameless slots skipped: {stats['skipped_nameless']:,}[/dim]")
+    if existing_tag_updates:
+        console.print(f"  [dim]Existing people to tag-merge: {len(existing_tag_updates):,}[/dim]")
+
+    return people_to_insert, existing_tag_updates, {
+        "person_phones": j_person_phones,
+        "person_emails": j_person_emails,
+        "person_orgs": j_person_orgs,
+        "person_props": j_person_props,
     }
 
 
-# ─── Phase 4: Insert people → get IDs ──────────────────────────────────────────
+# ─── Phase 4: Tag-merge existing + insert new people ───────────────────────────
 
-def phase4_insert_people(supabase, people_to_insert: list[dict], dry_run: bool) -> list[str]:
+def phase4_apply_people(
+    supabase,
+    people_to_insert: list[dict],
+    existing_tag_updates: dict[str, list],
+    dry_run: bool,
+):
     """
-    Batch insert all people records. Returns list of UUIDs in the same order
-    as people_to_insert.
+    Update tags on existing CRM people, insert new rows.
+    Returns resolve(person_target) -> uuid string for junction writes.
     """
-    if dry_run or not people_to_insert:
-        console.print(f"[yellow]DRY RUN: would insert {len(people_to_insert):,} people[/yellow]")
-        return ["dry-run-id"] * len(people_to_insert)
+    if dry_run:
+        console.print(
+            f"[yellow]DRY RUN: would update tags on {len(existing_tag_updates):,} people, "
+            f"insert {len(people_to_insert):,} new[/yellow]"
+        )
+        fake = ["dry-run-id"] * max(len(people_to_insert), 1)
 
-    person_uuids: list[str] = []
+        def resolve_dry(t: PersonTarget) -> str:
+            if t[0] == "existing":
+                return str(t[1])
+            idx = t[1]
+            return fake[idx] if isinstance(idx, int) and idx < len(fake) else "dry-run-id"
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]Phase 4:[/bold blue] Inserting people..."),
-        BarColumn(),
-        MofNCompleteColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("people", total=len(people_to_insert))
+        return resolve_dry
 
-        for chunk in batch(people_to_insert, BATCH_SIZE):
-            result = supabase.table("people").insert(chunk).execute()
-            for row in result.data:
-                person_uuids.append(row["id"])
-            progress.advance(task, len(chunk))
+    for pid, tags in existing_tag_updates.items():
+        supabase.table("people").update({"tags": tags}).eq("id", pid).execute()
 
-    return person_uuids
+    new_uuids: list[str] = []
+    if people_to_insert:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]Phase 4:[/bold blue] Inserting new people..."),
+            BarColumn(),
+            MofNCompleteColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("people", total=len(people_to_insert))
+            for ins_chunk in batch(people_to_insert, BATCH_SIZE):
+                result = supabase.table("people").insert(ins_chunk).execute()
+                for row in result.data:
+                    new_uuids.append(row["id"])
+                progress.advance(task, len(ins_chunk))
+
+    def resolve_live(t: PersonTarget) -> str:
+        if t[0] == "existing":
+            return str(t[1])
+        idx = t[1]
+        if idx >= len(new_uuids):
+            raise RuntimeError(f"Invalid new person index {idx}; insert count {len(new_uuids)}")
+        return new_uuids[idx]
+
+    return resolve_live
 
 
 # ─── Phase 5: Insert all junction records ──────────────────────────────────────
 
-def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
-                             property_id_map: dict, phone_id_map: dict, org_id_map: dict,
-                             orphan_prop_phones: list[tuple],
-                             property_org_links: list[tuple], dry_run: bool):
+def phase5_insert_junctions(
+    supabase,
+    junctions: dict,
+    resolve_person_id,
+    property_id_map: dict,
+    phone_id_map: dict,
+    org_id_map: dict,
+    orphan_prop_phones: list[tuple],
+    property_org_links: list[tuple],
+    dry_run: bool,
+    import_source: str,
+):
     if dry_run:
         for table_key, records in junctions.items():
             console.print(f"[yellow]DRY RUN: would insert {len(records):,} {table_key} rows[/yellow]")
@@ -547,8 +729,8 @@ def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
     # ── person_phones ──────────────────────────────────────────────────────────
     pp_records = []
     seen_person_phone = set()
-    for (person_idx, data) in junctions["person_phones"]:
-        pid = person_uuids[person_idx]
+    for (target, data) in junctions["person_phones"]:
+        pid = resolve_person_id(target)
         key = (pid, data["phone_id"])
         if key not in seen_person_phone:
             seen_person_phone.add(key)
@@ -559,8 +741,8 @@ def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
     # ── person_emails ──────────────────────────────────────────────────────────
     pe_records = []
     seen_person_email = set()
-    for (person_idx, data) in junctions["person_emails"]:
-        pid = person_uuids[person_idx]
+    for (target, data) in junctions["person_emails"]:
+        pid = resolve_person_id(target)
         key = (pid, data["email_id"])
         if key not in seen_person_email:
             seen_person_email.add(key)
@@ -571,8 +753,8 @@ def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
     # ── person_organizations ───────────────────────────────────────────────────
     po_records = []
     seen_person_org = set()
-    for (person_idx, data) in junctions["person_orgs"]:
-        pid = person_uuids[person_idx]
+    for (target, data) in junctions["person_orgs"]:
+        pid = resolve_person_id(target)
         key = (pid, data["organization_id"])
         if key not in seen_person_org:
             seen_person_org.add(key)
@@ -583,8 +765,8 @@ def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
     # ── person_properties ─────────────────────────────────────────────────────
     pr_records = []
     seen_person_prop = set()
-    for (person_idx, data) in junctions["person_props"]:
-        pid = person_uuids[person_idx]
+    for (target, data) in junctions["person_props"]:
+        pid = resolve_person_id(target)
         key = (pid, data["property_id"], data["role"])
         if key not in seen_person_prop:
             seen_person_prop.add(key)
@@ -596,7 +778,7 @@ def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
     orp_records = []
     seen_prop_phone = set()
     for (prop_key, phone_digits) in orphan_prop_phones:
-        prop_id  = property_id_map.get(prop_key)
+        prop_id = property_id_map.get(prop_key)
         phone_id = phone_id_map.get(phone_digits)
         if prop_id and phone_id:
             key = (prop_id, phone_id)
@@ -604,31 +786,34 @@ def phase5_insert_junctions(supabase, junctions: dict, person_uuids: list[str],
                 seen_prop_phone.add(key)
                 orp_records.append({
                     "property_id": prop_id,
-                    "phone_id":    phone_id,
-                    "label":       "property_line",
-                    "source":      "qozb_import",
+                    "phone_id": phone_id,
+                    "label": "property_line",
+                    "source": import_source,
                 })
 
     _batch_upsert_junctions(supabase, "property_phones", orp_records, "property_id,phone_id", "property_phones")
 
     # ── property_organizations (direct property → org links) ───────────────────
-    po_records = []
+    po2_records = []
     seen_prop_org = set()
     for (prop_key, entity_name, role) in property_org_links:
         prop_id = property_id_map.get(prop_key)
-        org_id  = org_id_map.get(entity_name)
+        org_id = org_id_map.get(entity_name)
         if prop_id and org_id:
             key = (prop_id, org_id, role)
             if key not in seen_prop_org:
                 seen_prop_org.add(key)
-                po_records.append({
-                    "property_id":     prop_id,
+                po2_records.append({
+                    "property_id": prop_id,
                     "organization_id": org_id,
-                    "role":            role,
-                    "source":          "qozb_import",
+                    "role": role,
+                    "source": import_source,
                 })
 
-    _batch_upsert_junctions(supabase, "property_organizations", po_records, "property_id,organization_id,role", "property_organizations")
+    _batch_upsert_junctions(
+        supabase, "property_organizations", po2_records,
+        "property_id,organization_id,role", "property_organizations",
+    )
 
 
 def _batch_upsert_junctions(supabase, table: str, records: list[dict], on_conflict: str, label: str):
@@ -666,7 +851,7 @@ def print_summary(unique_phones, unique_emails, unique_orgs, unique_properties,
     table.add_row("organizations",     f"{len(unique_orgs):,}",       "dedup on name (exact)")
     table.add_row("phones",            f"{len(unique_phones):,}",     "dedup on normalized digits")
     table.add_row("emails",            f"{len(unique_emails):,}",     "Owner Contact Email only")
-    table.add_row("people",            f"{len(people_to_insert):,}",  "dedup on (phone, name)")
+    table.add_row("people (new rows)", f"{len(people_to_insert):,}",  "existing CRM matches updated separately")
     table.add_row("property_phones",   f"{len(orphan_prop_phones):,}","orphan property-level phones")
     table.add_row("property_organizations", f"{len(property_org_links):,}", "direct property ↔ org links")
     table.add_row("person_phones",     "—",                           "see junction phase")
@@ -684,66 +869,114 @@ def print_summary(unique_phones, unique_emails, unique_orgs, unique_properties,
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Import QOZB contacts into consolidated CRM schema")
+    parser = argparse.ArgumentParser(description="Import QOZB-format CSV into consolidated CRM schema")
     parser.add_argument("--dry-run", action="store_true", help="Scan and plan but do not write to DB")
-    parser.add_argument("--limit",   type=int, default=None, help="Only process first N CSV rows")
+    parser.add_argument("--limit", type=int, default=None, help="Only process first N CSV rows")
+    parser.add_argument("--csv-path", default=CSV_PATH, help="Path to QOZB-format CSV")
+    parser.add_argument(
+        "--people-tags",
+        default="qozb_property_contact",
+        help="Comma-separated tags applied to people touched by this import (e.g. pre_c_of_o_list)",
+    )
+    parser.add_argument(
+        "--import-source",
+        default="qozb_import",
+        help="Stored in people.details.source and junction source fields (e.g. pre_c_of_o_import)",
+    )
     args = parser.parse_args()
 
+    csv_path = args.csv_path
+    people_tags = [t.strip() for t in args.people_tags.split(",") if t.strip()]
+    if not people_tags:
+        console.print("[red]ERROR: --people-tags must list at least one tag[/red]")
+        sys.exit(1)
+    import_source = args.import_source
+
     console.print(Panel(
-        f"[bold]QOZB → CRM Import[/bold]\n"
-        f"CSV: {CSV_PATH}\n"
+        f"[bold]QOZB-format → CRM Import[/bold]\n"
+        f"CSV: {csv_path}\n"
+        f"Tags: {', '.join(people_tags)}\n"
+        f"Import source: {import_source}\n"
         f"Mode: {'[yellow]DRY RUN[/yellow]' if args.dry_run else '[green]LIVE[/green]'}"
         + (f"\nLimit: first {args.limit} rows" if args.limit else ""),
         title="oz-doc-processor",
     ))
 
-    # ── Load .env and connect ────────────────────────────────────────────────
     env_path = os.path.join(os.path.dirname(__file__), "../.env")
     load_dotenv(env_path)
 
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     supabase = None
-    if not args.dry_run:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if not url or not key:
-            console.print("[red]ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in oz-doc-processor/.env[/red]")
-            sys.exit(1)
+    if url and key:
         from supabase import create_client
         supabase = create_client(url, key)
         console.print(f"[green]Connected to Supabase:[/green] {url}")
+    elif not args.dry_run:
+        console.print("[red]ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in oz-doc-processor/.env[/red]")
+        sys.exit(1)
+    else:
+        console.print("[yellow]No Supabase credentials: CRM person matching skipped in dry run[/yellow]")
 
-    # ── Load CSV ─────────────────────────────────────────────────────────────
+    crm_lookups = None
+    if supabase:
+        console.print("\n[bold]Loading CRM person lookups (email + phone + name)[/bold]")
+        try:
+            crm_lookups = fetch_crm_person_lookups(supabase)
+        except Exception as e:
+            if args.dry_run:
+                console.print(
+                    f"[yellow]Could not load CRM lookups (matching will be skipped in this dry run): {e}[/yellow]"
+                )
+            else:
+                console.print(f"[red]Failed to load CRM person lookups (required for live import): {e}[/red]")
+                sys.exit(1)
+
     console.print(f"\nLoading CSV...")
-    df = pd.read_csv(CSV_PATH, encoding="utf-8-sig", low_memory=False)
+    df = pd.read_csv(csv_path, encoding="utf-8-sig", low_memory=False)
     console.print(f"[dim]Loaded {len(df):,} rows[/dim]")
 
-    # ── Phase 1 ──────────────────────────────────────────────────────────────
     console.print("\n[bold]Phase 1: Collecting unique entities[/bold]")
     (unique_phones, unique_emails, unique_orgs, unique_properties,
-     orphan_prop_phones, property_org_links, contact_slots) = phase1_collect(df, args.limit)
+     orphan_prop_phones, property_org_links, contact_slots) = phase1_collect(
+        df, args.limit, import_source
+    )
 
-    # ── Phase 2 ──────────────────────────────────────────────────────────────
     console.print("\n[bold]Phase 2: Upserting entity tables[/bold]")
     phone_id_map, email_id_map, org_id_map, property_id_map = phase2_upsert_entities(
         supabase, unique_phones, unique_emails, unique_orgs, unique_properties, args.dry_run
     )
 
-    # ── Phase 3 ──────────────────────────────────────────────────────────────
     console.print("\n[bold]Phase 3: Resolving people & collecting junction records[/bold]")
-    people_to_insert, people_key_map, junctions = phase3_resolve_people(
-        contact_slots, phone_id_map, email_id_map, org_id_map, property_id_map, args.dry_run
+    people_to_insert, existing_tag_updates, junctions = phase3_resolve_people(
+        contact_slots,
+        phone_id_map,
+        email_id_map,
+        org_id_map,
+        property_id_map,
+        args.dry_run,
+        people_tags,
+        import_source,
+        crm_lookups,
     )
 
-    # ── Phase 4 ──────────────────────────────────────────────────────────────
-    console.print("\n[bold]Phase 4: Inserting people[/bold]")
-    person_uuids = phase4_insert_people(supabase, people_to_insert, args.dry_run)
+    console.print("\n[bold]Phase 4: Updating existing people + inserting new[/bold]")
+    resolve_person_id = phase4_apply_people(
+        supabase, people_to_insert, existing_tag_updates, args.dry_run
+    )
 
-    # ── Phase 5 ──────────────────────────────────────────────────────────────
     console.print("\n[bold]Phase 5: Inserting junction records[/bold]")
     phase5_insert_junctions(
-        supabase, junctions, person_uuids,
-        property_id_map, phone_id_map, org_id_map,
-        orphan_prop_phones, property_org_links, args.dry_run
+        supabase,
+        junctions,
+        resolve_person_id,
+        property_id_map,
+        phone_id_map,
+        org_id_map,
+        orphan_prop_phones,
+        property_org_links,
+        args.dry_run,
+        import_source,
     )
 
     # ── Summary ──────────────────────────────────────────────────────────────
