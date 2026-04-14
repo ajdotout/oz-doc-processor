@@ -268,17 +268,46 @@ def merge_property_details_rows(existing_details: Optional[dict], incoming_detai
     return {**inc, **old}
 
 
+# Batch size for property_name IN (...) — keeps URLs small and avoids huge responses.
+_PROPERTY_NAME_IN_BATCH = 80
+
+
+def fetch_property_details_for_import_keys(supabase, keys: set[tuple[str, str]]) -> dict[tuple, dict]:
+    """
+    Load details only for rows that might match this import (by property_name),
+    then keep exact (property_name, address) matches. Avoids full-table scan/timeouts.
+    """
+    wanted = set(keys)
+    unique_names = sorted({k[0] for k in keys if k[0]})
+    existing_by_key: dict[tuple, dict] = {}
+
+    for i in range(0, len(unique_names), _PROPERTY_NAME_IN_BATCH):
+        name_batch = unique_names[i : i + _PROPERTY_NAME_IN_BATCH]
+        result = (
+            supabase.table("properties")
+            .select("property_name,address,details")
+            .in_("property_name", name_batch)
+            .execute()
+        )
+        for row in result.data or []:
+            k = (row.get("property_name"), row.get("address") or "")
+            if k in wanted:
+                existing_by_key[k] = row.get("details")
+
+    return existing_by_key
+
+
 def apply_existing_property_details_merge(supabase, unique_properties: dict) -> None:
     """Mutate unique_properties in place: merge DB details for same (property_name, address)."""
     keys = set(unique_properties.keys())
     if not keys:
         return
-    rows = fetch_all(supabase, "properties", "property_name,address,details")
-    existing_by_key = {}
-    for row in rows:
-        k = (row.get("property_name"), row.get("address") or "")
-        if k in keys:
-            existing_by_key[k] = row.get("details")
+    unique_names = {k[0] for k in keys}
+    console.print(
+        f"  [dim]Merging property details: scoped fetch for {len(unique_names):,} "
+        f"distinct names ({len(keys):,} property keys)[/dim]"
+    )
+    existing_by_key = fetch_property_details_for_import_keys(supabase, keys)
     for k, rec in unique_properties.items():
         if k in existing_by_key:
             rec["details"] = merge_property_details_rows(existing_by_key[k], rec.get("details") or {})
